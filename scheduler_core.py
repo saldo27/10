@@ -11,6 +11,9 @@ from typing import Dict, List, Set, Optional, Tuple, Any
 
 from scheduler_config import SchedulerConfig
 from exceptions import SchedulerError
+from optimization_metrics import OptimizationMetrics
+from operation_prioritizer import OperationPrioritizer
+from progress_monitor import ProgressMonitor
 
 
 class SchedulerCore:
@@ -21,7 +24,7 @@ class SchedulerCore:
     
     def __init__(self, scheduler):
         """
-        Initialize the scheduler core with a reference to the main scheduler.
+        Initialize the scheduler core with enhanced optimization systems.
         
         Args:
             scheduler: Reference to the main Scheduler instance
@@ -32,7 +35,12 @@ class SchedulerCore:
         self.end_date = scheduler.end_date
         self.workers_data = scheduler.workers_data
         
-        logging.info("SchedulerCore initialized")
+        # Initialize enhancement systems
+        self.metrics = OptimizationMetrics(scheduler)
+        self.prioritizer = OperationPrioritizer(scheduler, self.metrics)
+        self.progress_monitor = None  # Will be initialized in orchestrate_schedule_generation
+        
+        logging.info("SchedulerCore initialized with enhanced optimization systems")
     
     def orchestrate_schedule_generation(self, max_improvement_loops: int = 70) -> bool:
         """
@@ -140,7 +148,7 @@ class SchedulerCore:
     
     def _iterative_improvement_phase(self, max_improvement_loops: int) -> bool:
         """
-        Phase 3: Iterative improvement of the schedule.
+        Phase 3: Enhanced iterative improvement with smart optimization.
         
         Args:
             max_improvement_loops: Maximum number of improvement iterations
@@ -148,63 +156,160 @@ class SchedulerCore:
         Returns:
             bool: True if improvement phase completed successfully
         """
-        logging.info("Phase 3: Starting iterative improvement...")
+        logging.info("Phase 3: Starting enhanced iterative improvement...")
+        
+        # Initialize progress monitor
+        self.progress_monitor = ProgressMonitor(self.scheduler, max_improvement_loops)
+        self.progress_monitor.start_monitoring()
         
         improvement_loop_count = 0
-        improvement_made_in_cycle = True
+        overall_improvement_made = True
         
         try:
             # Aumentar el número de ciclos por defecto si no se especifica
             if max_improvement_loops < 120:
                 max_improvement_loops = 120
-            while improvement_made_in_cycle and improvement_loop_count < max_improvement_loops:
-                improvement_made_in_cycle = False
+                
+            # Calculate initial score for comparison
+            current_overall_score = self.metrics.calculate_overall_schedule_score()
+            logging.info(f"Score inicial: {current_overall_score:.2f}")
+            
+            while overall_improvement_made and improvement_loop_count < max_improvement_loops:
                 loop_start_time = datetime.now()
-
-                logging.info(f"--- Starting Improvement Loop {improvement_loop_count + 1} ---")
-
-                # Priorizar llenado de huecos y balanceo homogéneo
-                improvement_operations = [
-                    ("fill_empty_shifts", self.scheduler.schedule_builder._try_fill_empty_shifts),
-                    ("balance_workloads", self.scheduler.schedule_builder._balance_workloads),
-                    ("balance_weekday_distribution", self.scheduler.schedule_builder._balance_weekday_distribution),
-                    ("fill_empty_shifts_2", self.scheduler.schedule_builder._try_fill_empty_shifts),
-                    ("balance_workloads_2", self.scheduler.schedule_builder._balance_workloads),
-                    ("improve_weekend_distribution_1", self.scheduler.schedule_builder._improve_weekend_distribution),
-                    ("distribute_holiday_shifts_proportionally", self.scheduler.schedule_builder.distribute_holiday_shifts_proportionally),
-                    ("rebalance_weekend_distribution", self.scheduler.schedule_builder.rebalance_weekend_distribution),
-                    ("synchronize_tracking_data", self.scheduler.schedule_builder._synchronize_tracking_data),
-                    ("improve_weekend_distribution_2", self.scheduler.schedule_builder._improve_weekend_distribution),
-                    ("adjust_last_post_distribution", self.scheduler.schedule_builder._adjust_last_post_distribution),
-                ]
-
-                for operation_name, operation_func in improvement_operations:
+                improvement_loop_count += 1
+                
+                logging.info(f"--- Starting Enhanced Improvement Loop {improvement_loop_count} ---")
+                
+                # Get current state for decision making
+                current_state = {
+                    'empty_shifts_count': self.metrics.count_empty_shifts(),
+                    'workload_imbalance': self.metrics.calculate_workload_imbalance(),
+                    'weekend_imbalance': self.metrics.calculate_weekend_imbalance()
+                }
+                
+                # Get dynamically prioritized operations
+                prioritized_operations = self.prioritizer.prioritize_operations_dynamically()
+                
+                # Execute operations with enhanced tracking
+                operation_results = {}
+                cycle_improvement_made = False
+                
+                for operation_name, operation_func, priority in prioritized_operations:
                     try:
+                        # Check if operation should be skipped
+                        should_skip, skip_reason = self.prioritizer.should_skip_operation(
+                            operation_name, current_state
+                        )
+                        
+                        if should_skip:
+                            logging.debug(f"Skipping {operation_name}: {skip_reason}")
+                            operation_results[operation_name] = {
+                                'improved': False,
+                                'skipped': True,
+                                'reason': skip_reason
+                            }
+                            continue
+                        
+                        # Measure performance of operation
+                        before_score = self.metrics.calculate_overall_schedule_score()
+                        operation_start_time = datetime.now()
+                        
+                        # Execute operation
                         if operation_name == "synchronize_tracking_data":
                             operation_func()
+                            operation_made_change = True  # This operation always "succeeds"
                         else:
-                            if operation_func():
-                                logging.info(f"Improvement Loop: {operation_name} made improvements.")
-                                improvement_made_in_cycle = True
+                            operation_made_change = operation_func()
+                        
+                        operation_end_time = datetime.now()
+                        execution_time = (operation_end_time - operation_start_time).total_seconds()
+                        
+                        # Evaluate improvement quality
+                        after_score = self.metrics.calculate_overall_schedule_score()
+                        
+                        if operation_made_change and operation_name != "synchronize_tracking_data":
+                            is_significant, improvement_ratio = self.metrics.evaluate_improvement_quality(
+                                before_score, after_score, operation_name
+                            )
+                            
+                            if is_significant:
+                                logging.info(f"✅ {operation_name}: mejora significativa "
+                                           f"({improvement_ratio:.4f}, +{after_score-before_score:.2f})")
+                                cycle_improvement_made = True
+                            else:
+                                logging.debug(f"⚠️  {operation_name}: mejora marginal "
+                                            f"({improvement_ratio:.4f})")
+                        
+                        # Record operation results
+                        operation_results[operation_name] = self.prioritizer.analyze_operation_effectiveness(
+                            operation_name, before_score, after_score, execution_time
+                        )
+                        
                     except Exception as e:
                         logging.warning(f"Operation {operation_name} failed: {str(e)}")
-
+                        operation_results[operation_name] = {
+                            'improved': False,
+                            'error': str(e)
+                        }
+                
+                # Update current score after all operations
+                current_overall_score = self.metrics.calculate_overall_schedule_score()
+                
+                # Track iteration progress with enhanced monitoring
+                progress_data = self.progress_monitor.track_iteration_progress(
+                    improvement_loop_count, operation_results, current_overall_score, current_state
+                )
+                
+                # Record iteration for trend analysis
+                self.metrics.record_iteration_result(
+                    improvement_loop_count, operation_results, current_overall_score
+                )
+                
+                # Check if should continue with smart early stopping
+                should_continue, reason = self.metrics.should_continue_optimization(improvement_loop_count)
+                if not should_continue:
+                    logging.info(f"🛑 Parada temprana activada: {reason}")
+                    break
+                
+                # Traditional improvement check as fallback
+                overall_improvement_made = cycle_improvement_made
+                
+                # Log cycle summary
                 loop_end_time = datetime.now()
                 loop_duration = (loop_end_time - loop_start_time).total_seconds()
-                logging.info(f"--- Improvement Loop {improvement_loop_count + 1} completed in {loop_duration:.2f}s. Changes made: {improvement_made_in_cycle} ---")
+                successful_operations = sum(
+                    1 for result in operation_results.values() 
+                    if isinstance(result, dict) and result.get('improved', False)
+                )
+                
+                logging.info(f"--- Loop {improvement_loop_count} completado en {loop_duration:.2f}s. "
+                           f"Operaciones exitosas: {successful_operations}/{len(operation_results)} ---")
+                
+                if not overall_improvement_made:
+                    logging.info("No se detectaron mejoras adicionales. Finalizando fase de mejora.")
 
-                if not improvement_made_in_cycle:
-                    logging.info("No further improvements detected. Exiting improvement phase.")
-
-                improvement_loop_count += 1
-
+            # Final summary
             if improvement_loop_count >= max_improvement_loops:
-                logging.warning(f"Reached maximum improvement loops ({max_improvement_loops}). Stopping improvements.")
+                termination_reason = f"Límite de iteraciones alcanzado ({max_improvement_loops})"
+                logging.warning(termination_reason)
+            else:
+                termination_reason = "Convergencia alcanzada"
+                
+            # Display final optimization summary
+            self.progress_monitor.display_optimization_summary(
+                improvement_loop_count, current_overall_score, termination_reason
+            )
+            
+            # Get performance insights for logging
+            insights = self.progress_monitor.get_performance_insights()
+            if not insights.get('error'):
+                logging.info(f"📊 Insights finales: {insights['significant_improvements']} mejoras significativas, "
+                           f"tasa de éxito: {insights['average_operations_success_rate']:.2f}")
 
             return True
 
         except Exception as e:
-            logging.error(f"Error during iterative improvement phase: {str(e)}", exc_info=True)
+            logging.error(f"Error during enhanced iterative improvement phase: {str(e)}", exc_info=True)
             return False
     
     def _finalization_phase(self) -> bool:
