@@ -1,1 +1,2 @@
-Aplicación de Programación de Horarios - Versión Limpia 
+Aplicación de Programación de Guardias
+- Versión Limpia 
