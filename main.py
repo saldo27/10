@@ -214,10 +214,31 @@ class WelcomeScreen(Screen):
         import os
         
         try:
-            # Check for historical data
-            historical_path = '/workspaces/10/historical_data/consolidated_history.json'
-            if not os.path.exists(historical_path):
-                self.show_popup("Información", "No hay repartos generados aún.\nPrimero crea un reparto con 'Comienza el reparto'.")
+            # Try multiple possible paths for the historical data
+            possible_paths = [
+                '/workspaces/10/historical_data/consolidated_history.json',
+                './historical_data/consolidated_history.json',
+                'historical_data/consolidated_history.json',
+                os.path.join(os.path.dirname(__file__), 'historical_data', 'consolidated_history.json')
+            ]
+            
+            historical_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    historical_path = path
+                    break
+            
+            if not historical_path:
+                current_dir = os.getcwd()
+                self.show_popup("Información de Calendarios", f"""📅 No se encontraron repartos históricos
+
+🔍 Directorio actual: {current_dir}
+📁 Sistema de calendarios: Listo para usar
+
+💡 Para ver calendarios históricos:
+• Crea algunos horarios con 'Comienza el reparto'
+• Los calendarios se guardarán automáticamente
+• Podrás acceder a repartos anteriores desde aquí""")
                 return
             
             with open(historical_path, 'r') as f:
@@ -225,7 +246,12 @@ class WelcomeScreen(Screen):
             
             records = history.get('records', [])
             if not records:
-                self.show_popup("Información", "No hay registros históricos de repartos.\nGenera alguno para verlos aquí.")
+                self.show_popup("Información de Calendarios", """📅 Archivo de datos encontrado pero vacío
+
+💡 Para generar calendarios históricos:
+• Usa 'Comienza el reparto' para crear repartos
+• Cada horario se guarda automáticamente
+• Podrás ver patrones y estadísticas históricas""")
                 return
             
             # Show historical data summary and options
@@ -384,9 +410,9 @@ Genera un nuevo reparto con 'Comienza el reparto'"""
 • Rollback seguro de operaciones
 
 📊 Para Activar:
-• Inicialice un reparto para habilitar tiempo real
+• Inicialice un horario para habilitar tiempo real
 • Las funciones se activan automáticamente
-• Compatible con repartos existentes"""
+• Compatible con horarios existentes"""
 
         except Exception as e:
             return f"""⚡ Sistema de Tiempo Real:
@@ -401,15 +427,15 @@ Error: {str(e)}
 • Sistema de eventos para coordinación
 
 📊 Funciones Principales:
-• Asignaciones instantáneas sin regenerar reparto
+• Asignaciones instantáneas sin regenerar horario
 • Validación en vivo de todas las restricciones
 • Colaboración simultánea entre usuarios
 • Seguimiento completo de cambios
 • Deshacer/Rehacer con historial completo
 
 🚀 Para Usar:
-• Genere un reparto para activar las funciones
-• Sistema totalmente compatible con repartos existentes
+• Genere un horario para activar las funciones
+• Sistema totalmente compatible con horarios existentes
 • Rendimiento optimizado para respuesta instantánea"""
 
         except ImportError as ie:
@@ -438,16 +464,54 @@ Error: {str(e)}
             import json
             import os
             
-            # Check if we have historical data to work with
-            historical_path = '/workspaces/10/historical_data/consolidated_history.json'
-            if not os.path.exists(historical_path):
-                return "No hay datos históricos para análisis predictivo"
+            # Try multiple possible paths for the historical data
+            possible_paths = [
+                '/workspaces/10/historical_data/consolidated_history.json',
+                './historical_data/consolidated_history.json', 
+                'historical_data/consolidated_history.json',
+                os.path.join(os.path.dirname(__file__), 'historical_data', 'consolidated_history.json')
+            ]
+            
+            historical_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    historical_path = path
+                    break
+            
+            if not historical_path:
+                current_dir = os.getcwd()
+                return f"""🤖 Análisis Predictivo con IA:
+
+⚠️ No se encontraron datos históricos para análisis
+• Directorio actual: {current_dir}
+• Motor de IA: Disponible pero sin datos de entrenamiento
+
+🧠 Capacidades de IA Disponibles:
+• Motor de predicción: Listo
+• Algoritmos de Machine Learning: Instalados
+• Análisis de patrones: Preparado
+
+📊 Para activar IA predictiva:
+• Genera algunos horarios con 'Comienza el reparto'
+• Los algoritmos de IA se entrenan automáticamente
+• Predicciones mejoran con más datos históricos"""
             
             # Load historical data to get recent context
             with open(historical_path, 'r') as f:
                 history = json.load(f)
             
             records = history.get('records', [])
+            if not records:
+                return """🤖 Análisis Predictivo con IA:
+
+⚠️ Datos históricos encontrados pero vacíos
+• Archivo de datos existe pero sin registros
+• IA lista para entrenar cuando haya datos
+
+🚀 Para entrenar la IA:
+• Crea varios horarios para generar datos
+• Los algoritmos aprenden de cada horario generado
+• Análisis predictivo mejora continuamente"""
             if not records:
                 return "No hay registros suficientes para análisis predictivo"
             
@@ -526,7 +590,7 @@ Error al acceder a datos históricos: {str(e)}
 • Machine Learning: En espera de datos
 
 📊 Para activar funciones avanzadas:
-• Genere algunos repartos para crear datos históricos
+• Genere algunos horarios para crear datos históricos
 • Los algoritmos de IA se activan automáticamente
 • Análisis predictivo mejora con más datos"""
     
@@ -534,12 +598,17 @@ Error al acceder a datos históricos: {str(e)}
         """Show detailed statistics popup with real historical data"""
         from kivy.uix.popup import Popup
         
+        print("DEBUG: show_statistics_popup called")  # Debug log
+        
         try:
             app = App.get_running_app()
             scheduler = getattr(app, 'scheduler', None)
             
+            print(f"DEBUG: Scheduler available: {scheduler is not None}")  # Debug log
+            
             # Try current scheduler first, then historical data
             if scheduler:
+                print("DEBUG: Using current scheduler data")  # Debug log
                 # Calculate current schedule stats
                 total_shifts = sum(len(shifts) for shifts in scheduler.schedule.values())
                 filled_shifts = sum(1 for shifts in scheduler.schedule.values() 
@@ -552,7 +621,7 @@ Error al acceder a datos históricos: {str(e)}
                     weekend_count = scheduler.worker_weekend_counts.get(worker_id, 0)
                     worker_stats.append(f"• {worker_id}: {count} turnos ({weekend_count} fin semana)")
                 
-                stats_text = f"""📊 Estadísticas del reparto Actual:
+                stats_text = f"""📊 Estadísticas del Horario Actual:
 
 🎯 Cobertura General:
 • Total de espacios: {total_shifts}
@@ -565,11 +634,19 @@ Error al acceder a datos históricos: {str(e)}
 🔄 Sistema en Tiempo Real: Activo
 🤖 IA Predictiva: Habilitada"""
             else:
+                print("DEBUG: No current scheduler, loading historical data")  # Debug log
                 # Load historical data statistics
                 stats_text = self._load_historical_statistics()
+                print(f"DEBUG: Historical data result length: {len(stats_text)}")  # Debug log
                 
         except Exception as e:
-            stats_text = f"Error al generar estadísticas: {str(e)}"
+            error_msg = f"Error al generar estadísticas: {str(e)}"
+            print(f"DEBUG: Exception in show_statistics_popup: {error_msg}")  # Debug log
+            import traceback
+            traceback.print_exc()  # Full stack trace
+            stats_text = error_msg
+        
+        print(f"DEBUG: About to show popup with {len(stats_text)} characters")  # Debug log
         
         popup = Popup(
             title="📊 Estadísticas del Sistema",
@@ -577,6 +654,7 @@ Error al acceder a datos históricos: {str(e)}
             size_hint=(0.9, 0.7)
         )
         popup.open()
+        print("DEBUG: Popup opened successfully")  # Debug log
     
     def _load_historical_statistics(self):
         """Load statistics from historical data"""
@@ -584,16 +662,49 @@ Error al acceder a datos históricos: {str(e)}
         import os
         
         try:
-            consolidated_path = '/workspaces/10/historical_data/consolidated_history.json'
-            if not os.path.exists(consolidated_path):
-                return "No hay datos históricos disponibles"
+            # Try multiple possible paths for the historical data
+            possible_paths = [
+                '/workspaces/10/historical_data/consolidated_history.json',
+                './historical_data/consolidated_history.json',
+                'historical_data/consolidated_history.json',
+                os.path.join(os.path.dirname(__file__), 'historical_data', 'consolidated_history.json')
+            ]
+            
+            consolidated_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    consolidated_path = path
+                    break
+            
+            if not consolidated_path:
+                # Debug info
+                current_dir = os.getcwd()
+                files_in_current = os.listdir(current_dir) if os.path.exists(current_dir) else []
+                return f"""📊 Estadísticas del Sistema:
+                
+⚠️ No se encontraron datos históricos en las rutas esperadas:
+• Directorio actual: {current_dir}
+• Archivos disponibles: {', '.join(files_in_current[:5])}...
+• Rutas buscadas: {', '.join(possible_paths[:2])}...
+
+💡 Para generar estadísticas:
+• Crea algunos horarios con 'Comienza el reparto'
+• Las estadísticas se generarán automáticamente"""
             
             with open(consolidated_path, 'r') as f:
                 history = json.load(f)
             
             records = history.get('records', [])
             if not records:
-                return "No hay registros históricos"
+                return """📊 Estadísticas del Sistema:
+                
+⚠️ No hay registros históricos aún
+• El archivo de datos existe pero está vacío
+• Genera algunos horarios para ver estadísticas
+
+💡 Para activar estadísticas:
+• Usa 'Comienza el reparto' para crear horarios
+• Los datos se almacenarán automáticamente"""
             
             # Analyze historical data
             latest_record = records[-1]
@@ -619,7 +730,7 @@ Error al acceder a datos históricos: {str(e)}
 • Eficiencia promedio: {avg_efficiency:.1f}%
 • Último período: {period.get('start_date', 'N/A')[:10]} - {period.get('end_date', 'N/A')[:10]}
 
-🎯 Último reparto Registrado:
+🎯 Último Horario Registrado:
 • Cobertura general: {coverage_metrics.get('overall_coverage', 0):.1f}%
 • Espacios críticos sin cubrir: {len(coverage_metrics.get('critical_gaps', []))}
 • Patrones estacionales detectados: ✓
@@ -708,7 +819,7 @@ Error al acceder a datos históricos: {str(e)}
                 filename = exporter.export_schedule(app.scheduler)
                 self.show_popup("Éxito", f"PDF exportado: {filename}")
             else:
-                self.show_popup("Error", "No hay reparto para exportar")
+                self.show_popup("Error", "No hay horario para exportar")
         except Exception as e:
             self.show_popup("Error", f"Error al exportar PDF: {str(e)}")
     
@@ -742,15 +853,45 @@ Error al acceder a datos históricos: {str(e)}
             import json
             from datetime import datetime
             
-            data_dir = '/workspaces/10/historical_data'
-            if not os.path.exists(data_dir):
-                self.show_popup("Error", "No se encontró el directorio de datos históricos")
+            # Try multiple possible paths for the historical data directory
+            possible_dirs = [
+                '/workspaces/10/historical_data',
+                './historical_data',
+                'historical_data',
+                os.path.join(os.path.dirname(__file__), 'historical_data')
+            ]
+            
+            data_dir = None
+            for dir_path in possible_dirs:
+                if os.path.exists(dir_path) and os.path.isdir(dir_path):
+                    data_dir = dir_path
+                    break
+            
+            if not data_dir:
+                current_dir = os.getcwd()
+                available_dirs = [d for d in os.listdir(current_dir) if os.path.isdir(d)] if os.path.exists(current_dir) else []
+                self.show_popup("Información de Importación", f"""📁 No se encontró el directorio de datos históricos
+
+🔍 Directorio actual: {current_dir}
+📂 Directorios disponibles: {', '.join(available_dirs[:5])}
+
+💡 Para habilitar importación:
+• Genera algunos horarios para crear datos históricos
+• Los archivos de configuración se crearán automáticamente""")
                 return
             
             # Get available JSON files
             json_files = [f for f in os.listdir(data_dir) if f.endswith('.json') and f != 'consolidated_history.json']
             if not json_files:
-                self.show_popup("Error", "No se encontraron archivos JSON para importar")
+                self.show_popup("Información de Importación", f"""📁 Directorio encontrado pero sin archivos JSON
+
+📂 Directorio: {data_dir}
+📄 Archivos disponibles: {len(os.listdir(data_dir))} archivos total
+
+💡 Para crear archivos de importación:
+• Genera varios horarios con 'Comienza el reparto'
+• Los archivos JSON se crearán automáticamente
+• Cada horario genera un archivo de configuración""")
                 return
             
             # Sort by modification date (newest first)
@@ -803,7 +944,7 @@ Error al acceder a datos históricos: {str(e)}
                 files_text += f"... y {len(json_files) - 5} archivos más\n\n"
             
             files_text += """💡 Funcionalidad de Importación:
-• Configuraciones de repartos anteriores
+• Configuraciones de horarios anteriores
 • Datos históricos para análisis
 • Restaurar parámetros de trabajadores
 
@@ -1708,7 +1849,7 @@ class WorkerDetailsScreen(Screen):
                     # Schedule the PDF export on the main thread
                     Clock.schedule_once(lambda dt: self._handle_success(scheduler, cfg))
                 else:
-                    Clock.schedule_once(lambda dt: self.show_error("No se pudo generar un reparto válido."))
+                    Clock.schedule_once(lambda dt: self.show_error("No se pudo generar un horario válido."))
                     
             except Exception as e:
                 Clock.schedule_once(lambda dt: self.show_error(f"Error: {str(e)}"))
@@ -3178,7 +3319,7 @@ class CalendarViewScreen(Screen):
             if not app.schedule_config or not app.schedule_config.get('schedule'):
                 popup = Popup(
                     title='Error',
-                    content=Label(text='No hay reparto generado para ajustar'),
+                    content=Label(text='No hay horario generado para ajustar'),
                     size_hint=(None, None),
                     size=(400, 200)
                 )
@@ -3393,12 +3534,12 @@ class CalendarViewScreen(Screen):
             self.suggestions_layout.height = 40
 
     def _accept_suggestion(self, suggestion):
-        """Acepta una sugerencia y actualiza el reparto"""
+        """Acepta una sugerencia y actualiza el horario"""
         try:
             # Aplicar el intercambio
             new_schedule = self.current_adjustment_manager.apply_swap(suggestion)
             
-            # Actualizar el reparto en la aplicación
+            # Actualizar el horario en la aplicación
             app = App.get_running_app()
             app.schedule_config['schedule'] = new_schedule
             self.schedule = new_schedule
@@ -3449,7 +3590,7 @@ class CalendarViewScreen(Screen):
     def _finalize_adjustments(self):
         """Finaliza los ajustes y genera PDF actualizado"""
         try:
-            # Generar PDF con el reparto actualizado
+            # Generar PDF con el horario actualizado
             app = App.get_running_app()
             
             # Llamar al método de exportación PDF
@@ -3482,7 +3623,7 @@ class GenerateScheduleScreen(Screen):
         super().__init__(**kwargs)
 
         # A button to kick off scheduling
-        btn = Button(text="Generar reparto", size_hint=(1, None), height=50)
+        btn = Button(text="Generar horario", size_hint=(1, None), height=50)
         btn.bind(on_press=self.on_generate)
         self.add_widget(btn)
 
@@ -3505,7 +3646,7 @@ class GenerateScheduleScreen(Screen):
             scheduler = Scheduler(cfg)
             success   = scheduler.generate_schedule()
             if not success:
-                return self._error("No se pudo generar un reparto válido.")
+                return self._error("No se pudo generar un horario válido.")
 
             # Store for later display/review
             app.final_schedule = scheduler.schedule
@@ -3559,4 +3700,3 @@ class ShiftManagerApp(App):
 
 if __name__ == '__main__':
     ShiftManagerApp().run()
-
