@@ -485,7 +485,7 @@ class LiveValidator:
         )
     
     def _check_weekend_limits(self, worker_id: str, shift_date: datetime) -> ValidationResult:
-        """Check weekend/holiday shift limits using comprehensive constraint checker logic"""
+        """Check weekend/holiday shift limits for existing assignments"""
         # Check if this is a weekend/holiday day using the same logic as constraint checker
         is_weekend_or_holiday = (
             shift_date.weekday() >= 4 or  # Friday, Saturday, Sunday
@@ -501,15 +501,43 @@ class LiveValidator:
                 constraint_type="weekend_limit"
             )
         
-        # Use the comprehensive constraint checker logic
+        # For existing assignments, we need to check if the current allocation is valid
+        # without double-counting the date being validated
         if hasattr(self.scheduler, 'constraint_checker'):
-            if self.scheduler.constraint_checker._would_exceed_weekend_limit(worker_id, shift_date):
-                return ValidationResult(
-                    is_valid=False,
-                    severity=ValidationSeverity.ERROR,
-                    message=f"Weekend/holiday limit would be exceeded for worker {worker_id}",
-                    constraint_type="weekend_limit"
-                )
+            # Check if this worker is already assigned on this date
+            current_assignments = self.scheduler.worker_assignments.get(worker_id, set())
+            is_already_assigned = shift_date in current_assignments
+            
+            if is_already_assigned:
+                # For existing assignments, temporarily remove the date and check if re-adding would be valid
+                # This prevents double-counting in the constraint checker
+                temp_assignments = current_assignments.copy()
+                temp_assignments.discard(shift_date)
+                original_assignments = self.scheduler.worker_assignments[worker_id]
+                self.scheduler.worker_assignments[worker_id] = temp_assignments
+                
+                try:
+                    would_exceed = self.scheduler.constraint_checker._would_exceed_weekend_limit(worker_id, shift_date)
+                finally:
+                    # Restore original assignments
+                    self.scheduler.worker_assignments[worker_id] = original_assignments
+                
+                if would_exceed:
+                    return ValidationResult(
+                        is_valid=False,
+                        severity=ValidationSeverity.ERROR,
+                        message=f"Weekend/holiday limit exceeded for worker {worker_id}",
+                        constraint_type="weekend_limit"
+                    )
+            else:
+                # For new assignments, use the normal check
+                if self.scheduler.constraint_checker._would_exceed_weekend_limit(worker_id, shift_date):
+                    return ValidationResult(
+                        is_valid=False,
+                        severity=ValidationSeverity.ERROR,
+                        message=f"Weekend/holiday limit would be exceeded for worker {worker_id}",
+                        constraint_type="weekend_limit"
+                    )
         
         return ValidationResult(
             is_valid=True,
@@ -923,4 +951,5 @@ class LiveValidator:
                     post_index=post_index1,
                     violation_type=result.constraint_type,
                     message=result.message
+                )
                 )
