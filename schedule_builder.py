@@ -188,16 +188,21 @@ class ScheduleBuilder:
             logging.warning("Scheduler\'_synchronize_tracking_data not found by builder.")
             # Fallback or simplified sync if necessary:
             new_worker_assignments = {w['id']: set() for w in self.workers_data}
-            new_worker_posts = {w['id']: {p: 0 for p in range(self.num_shifts)} for w in self.workers_data}
+            new_worker_posts = {w['id']: set() for w in self.workers_data}  # FIXED: Should be sets, not dicts
+            new_worker_post_counts = {w['id']: {p: 0 for p in range(self.num_shifts)} for w in self.workers_data}
             for date, shifts_on_date in self.schedule.items():
                 for post_idx, worker_id_in_post in enumerate(shifts_on_date):
                     if worker_id_in_post is not None:
                         new_worker_assignments.setdefault(worker_id_in_post, set()).add(date)
-                        new_worker_posts.setdefault(worker_id_in_post, {p: 0 for p in range(self.num_shifts)})[post_idx] += 1
+                        new_worker_posts.setdefault(worker_id_in_post, set()).add(post_idx)  # FIXED: Add to set
+                        new_worker_post_counts.setdefault(worker_id_in_post, {p: 0 for p in range(self.num_shifts)})[post_idx] += 1
             self.worker_assignments = new_worker_assignments # Update builder\'s reference
             self.scheduler.worker_assignments = new_worker_assignments # Update scheduler\'s reference
             self.worker_posts = new_worker_posts
-            self.scheduler.worker_posts = new_worker_posts
+            self.scheduler.worker_posts = new_worker_posts  # FIXED: Now correctly sets
+            # Update post counts if the scheduler has this tracking
+            if hasattr(self.scheduler, 'worker_post_counts'):
+                self.scheduler.worker_post_counts = new_worker_post_counts
             self.scheduler.worker_shift_counts = {worker_id: len(dates) for worker_id, dates in new_worker_assignments.items()}
             # self.scheduler.worker_shift_counts = self.worker_shift_counts # This line is redundant
             # Add other tracking data sync if needed (weekends, etc.)
@@ -3353,27 +3358,45 @@ class ScheduleBuilder:
         for worker_id, assignments in self.worker_assignments.items():
             worker_shift_counts[worker_id] = len(assignments)
         
-        # Calculate worker_posts from current schedule
+        # Calculate worker_posts and worker_weekend_counts from current schedule
         worker_posts = {}
+        worker_weekend_counts = {}
+        
+        # Initialize worker_weekend_counts for all workers
+        for worker_data in self.scheduler.workers_data:
+            worker_weekend_counts[worker_data['id']] = 0
+            
         for date, shifts in self.schedule.items():
+            # Check if this date is a weekend or holiday
+            weekday = date.weekday()
+            is_weekend_or_holiday = (weekday >= 4 or 
+                                  date in self.scheduler.holidays or 
+                                  (date + timedelta(days=1)) in self.scheduler.holidays)
+            
             for post_idx, worker_id in enumerate(shifts):
                 if worker_id:
+                    # Calculate worker_posts
                     if worker_id not in worker_posts:
                         worker_posts[worker_id] = {}
-                    post_key = f"P{post_idx}"
-                    worker_posts[worker_id][post_key] = worker_posts[worker_id].get(post_key, 0) + 1
-        
+                    # Use post_idx directly as integer key (not "P{post_idx}" string)
+                    worker_posts[worker_id][post_idx] = worker_posts[worker_id].get(post_idx, 0) + 1
+                    
+                    # Calculate worker_weekend_counts
+                    if is_weekend_or_holiday:
+                        worker_weekend_counts[worker_id] += 1
+
         # Calculate last assignment dates
         last_assignment_date = {}
         for worker_id, assignments in self.worker_assignments.items():
             if assignments:
                 last_assignment_date[worker_id] = max(assignments)
-        
+
         return {
             'schedule': self.schedule,
             'worker_assignments': self.worker_assignments,
             'worker_shift_counts': worker_shift_counts,
             'worker_posts': worker_posts,
+            'worker_weekend_counts': worker_weekend_counts,
             'last_assignment_date': last_assignment_date,
             'consecutive_shifts': {},  # Initialize empty, can be calculated if needed
             'score': self.calculate_score()
