@@ -121,9 +121,9 @@ class WelcomeScreen(Screen):
         
         # Primary button - Start new schedule
         start_btn = Button(
-            text='🗓️ Comienza el reparto\n(Configurar nuevo horario)', 
+            text='🗓️ Comienza el reparto\n(Configurar nueva distribución)', 
             size_hint=(1, 1),
-            font_size=14,
+            font_size=20,
             bold=True
         )
         start_btn.bind(on_press=self.switch_to_setup)
@@ -131,7 +131,7 @@ class WelcomeScreen(Screen):
         
         # Calendar view button
         calendar_btn = Button(
-            text='📅 Ver Calendario\n(Horario actual)', 
+            text='📅 Ver Calendario\n(Reparto actual)', 
             size_hint=(1, 1),
             font_size=14
         )
@@ -201,7 +201,7 @@ class WelcomeScreen(Screen):
             if hasattr(app, 'schedule_config') and app.schedule_config:
                 self.manager.current = 'calendar_view'
             else:
-                self.show_popup("Información", "No hay horario generado aún.\nPrimero crea un horario con 'Comienza el reparto'.")
+                self.show_popup("Información", "No hay reparto generado aún.\nPrimero crea un horario con 'Comienza el reparto'.")
         except Exception as e:
             self.show_popup("Error", f"Error al acceder al calendario: {str(e)}")
             
