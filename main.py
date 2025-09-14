@@ -217,7 +217,7 @@ class WelcomeScreen(Screen):
             # Check for historical data
             historical_path = '/workspaces/10/historical_data/consolidated_history.json'
             if not os.path.exists(historical_path):
-                self.show_popup("Información", "No hay repartos generados aún.\nPrimero crea un horario con 'Comienza el reparto'.")
+                self.show_popup("Información", "No hay repartos generados aún.\nPrimero crea un reparto con 'Comienza el reparto'.")
                 return
             
             with open(historical_path, 'r') as f:
@@ -384,9 +384,9 @@ Genera un nuevo reparto con 'Comienza el reparto'"""
 • Rollback seguro de operaciones
 
 📊 Para Activar:
-• Inicialice un horario para habilitar tiempo real
+• Inicialice un reparto para habilitar tiempo real
 • Las funciones se activan automáticamente
-• Compatible con horarios existentes"""
+• Compatible con repartos existentes"""
 
         except Exception as e:
             return f"""⚡ Sistema de Tiempo Real:
@@ -401,15 +401,15 @@ Error: {str(e)}
 • Sistema de eventos para coordinación
 
 📊 Funciones Principales:
-• Asignaciones instantáneas sin regenerar horario
+• Asignaciones instantáneas sin regenerar reparto
 • Validación en vivo de todas las restricciones
 • Colaboración simultánea entre usuarios
 • Seguimiento completo de cambios
 • Deshacer/Rehacer con historial completo
 
 🚀 Para Usar:
-• Genere un horario para activar las funciones
-• Sistema totalmente compatible con horarios existentes
+• Genere un reparto para activar las funciones
+• Sistema totalmente compatible con repartos existentes
 • Rendimiento optimizado para respuesta instantánea"""
 
         except ImportError as ie:
@@ -526,7 +526,7 @@ Error al acceder a datos históricos: {str(e)}
 • Machine Learning: En espera de datos
 
 📊 Para activar funciones avanzadas:
-• Genere algunos horarios para crear datos históricos
+• Genere algunos repartos para crear datos históricos
 • Los algoritmos de IA se activan automáticamente
 • Análisis predictivo mejora con más datos"""
     
@@ -552,7 +552,7 @@ Error al acceder a datos históricos: {str(e)}
                     weekend_count = scheduler.worker_weekend_counts.get(worker_id, 0)
                     worker_stats.append(f"• {worker_id}: {count} turnos ({weekend_count} fin semana)")
                 
-                stats_text = f"""📊 Estadísticas del Horario Actual:
+                stats_text = f"""📊 Estadísticas del reparto Actual:
 
 🎯 Cobertura General:
 • Total de espacios: {total_shifts}
@@ -619,7 +619,7 @@ Error al acceder a datos históricos: {str(e)}
 • Eficiencia promedio: {avg_efficiency:.1f}%
 • Último período: {period.get('start_date', 'N/A')[:10]} - {period.get('end_date', 'N/A')[:10]}
 
-🎯 Último Horario Registrado:
+🎯 Último reparto Registrado:
 • Cobertura general: {coverage_metrics.get('overall_coverage', 0):.1f}%
 • Espacios críticos sin cubrir: {len(coverage_metrics.get('critical_gaps', []))}
 • Patrones estacionales detectados: ✓
@@ -708,7 +708,7 @@ Error al acceder a datos históricos: {str(e)}
                 filename = exporter.export_schedule(app.scheduler)
                 self.show_popup("Éxito", f"PDF exportado: {filename}")
             else:
-                self.show_popup("Error", "No hay horario para exportar")
+                self.show_popup("Error", "No hay reparto para exportar")
         except Exception as e:
             self.show_popup("Error", f"Error al exportar PDF: {str(e)}")
     
@@ -803,7 +803,7 @@ Error al acceder a datos históricos: {str(e)}
                 files_text += f"... y {len(json_files) - 5} archivos más\n\n"
             
             files_text += """💡 Funcionalidad de Importación:
-• Configuraciones de horarios anteriores
+• Configuraciones de repartos anteriores
 • Datos históricos para análisis
 • Restaurar parámetros de trabajadores
 
@@ -1708,7 +1708,7 @@ class WorkerDetailsScreen(Screen):
                     # Schedule the PDF export on the main thread
                     Clock.schedule_once(lambda dt: self._handle_success(scheduler, cfg))
                 else:
-                    Clock.schedule_once(lambda dt: self.show_error("No se pudo generar un horario válido."))
+                    Clock.schedule_once(lambda dt: self.show_error("No se pudo generar un reparto válido."))
                     
             except Exception as e:
                 Clock.schedule_once(lambda dt: self.show_error(f"Error: {str(e)}"))
@@ -3178,7 +3178,7 @@ class CalendarViewScreen(Screen):
             if not app.schedule_config or not app.schedule_config.get('schedule'):
                 popup = Popup(
                     title='Error',
-                    content=Label(text='No hay horario generado para ajustar'),
+                    content=Label(text='No hay reparto generado para ajustar'),
                     size_hint=(None, None),
                     size=(400, 200)
                 )
@@ -3393,12 +3393,12 @@ class CalendarViewScreen(Screen):
             self.suggestions_layout.height = 40
 
     def _accept_suggestion(self, suggestion):
-        """Acepta una sugerencia y actualiza el horario"""
+        """Acepta una sugerencia y actualiza el reparto"""
         try:
             # Aplicar el intercambio
             new_schedule = self.current_adjustment_manager.apply_swap(suggestion)
             
-            # Actualizar el horario en la aplicación
+            # Actualizar el reparto en la aplicación
             app = App.get_running_app()
             app.schedule_config['schedule'] = new_schedule
             self.schedule = new_schedule
@@ -3449,7 +3449,7 @@ class CalendarViewScreen(Screen):
     def _finalize_adjustments(self):
         """Finaliza los ajustes y genera PDF actualizado"""
         try:
-            # Generar PDF con el horario actualizado
+            # Generar PDF con el reparto actualizado
             app = App.get_running_app()
             
             # Llamar al método de exportación PDF
@@ -3482,7 +3482,7 @@ class GenerateScheduleScreen(Screen):
         super().__init__(**kwargs)
 
         # A button to kick off scheduling
-        btn = Button(text="Generar horario", size_hint=(1, None), height=50)
+        btn = Button(text="Generar reparto", size_hint=(1, None), height=50)
         btn.bind(on_press=self.on_generate)
         self.add_widget(btn)
 
@@ -3505,7 +3505,7 @@ class GenerateScheduleScreen(Screen):
             scheduler = Scheduler(cfg)
             success   = scheduler.generate_schedule()
             if not success:
-                return self._error("No se pudo generar un horario válido.")
+                return self._error("No se pudo generar un reparto válido.")
 
             # Store for later display/review
             app.final_schedule = scheduler.schedule
@@ -3559,3 +3559,4 @@ class ShiftManagerApp(App):
 
 if __name__ == '__main__':
     ShiftManagerApp().run()
+
