@@ -123,7 +123,7 @@ class WelcomeScreen(Screen):
         start_btn = Button(
             text='🗓️ Comienza el reparto\n(Configurar nuevo)', 
             size_hint=(1, 1),
-            font_size=14,
+            font_size=18,
             bold=True
         )
         start_btn.bind(on_press=self.switch_to_setup)
