@@ -328,3 +328,21 @@ class ChangeTracker:
             'oldest_change': self.changes[0].timestamp.isoformat() if self.changes else None,
             'newest_change': self.changes[-1].timestamp.isoformat() if self.changes else None
         }
+    
+    def get_current_state_info(self) -> Dict[str, Any]:
+        """
+        Get current state information for real-time analytics
+        
+        Returns:
+            Dictionary with current state information
+        """
+        return {
+            'total_changes': len(self.changes),
+            'current_position': self.current_position,
+            'can_undo': self.can_undo(),
+            'can_redo': self.can_redo(),
+            'pending_changes': len(self.changes) - self.current_position if self.changes else 0,
+            'last_change': self.changes[self.current_position - 1].description if self.current_position > 0 else None,
+            'history_size': len(self.changes),
+            'max_history': self.max_history
+        }
