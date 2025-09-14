@@ -102,7 +102,7 @@ class WelcomeScreen(Screen):
         # Welcome header
         header_layout = BoxLayout(orientation='vertical', size_hint_y=0.2, spacing=10)
         welcome_label = Label(
-            text='Bienvenido al Sistema de Programación de Turnos', 
+            text='Bienvenido al Sistema de Programación de Horarios', 
             font_size=22, 
             bold=True,
             halign='center'
@@ -121,9 +121,9 @@ class WelcomeScreen(Screen):
         
         # Primary button - Start new schedule
         start_btn = Button(
-            text='🗓️ Comienza el reparto\n(Configurar nuevo)', 
+            text='🗓️ Comienza el reparto\n(Configurar nuevo horario)', 
             size_hint=(1, 1),
-            font_size=18,
+            font_size=14,
             bold=True
         )
         start_btn.bind(on_press=self.switch_to_setup)
@@ -131,7 +131,7 @@ class WelcomeScreen(Screen):
         
         # Calendar view button
         calendar_btn = Button(
-            text='📅 Ver Calendario\n(Turnos asignados)', 
+            text='📅 Ver Calendario\n(Horario actual)', 
             size_hint=(1, 1),
             font_size=14
         )
@@ -201,9 +201,9 @@ class WelcomeScreen(Screen):
             if hasattr(app, 'schedule_config') and app.schedule_config:
                 self.manager.current = 'calendar_view'
             else:
-                self.show_popup("Información", "No hay reaprto generado aún.\nPrimero crea una asignación de turnos con 'Comienza el reparto'.")
+                self.show_popup("Información", "No hay horario generado aún.\nPrimero crea un horario con 'Comienza el reparto'.")
         except Exception as e:
-            self.show_popup("Error", f"Error al acceder al reparto: {str(e)}")
+            self.show_popup("Error", f"Error al acceder al calendario: {str(e)}")
             
     def show_statistics(self, instance):
         """Show statistics and analytics"""
@@ -212,7 +212,7 @@ class WelcomeScreen(Screen):
             if hasattr(app, 'schedule_config') and app.schedule_config:
                 self.show_statistics_popup()
             else:
-                self.show_popup("Información", "No hay datos para estadísticas.\nPrimero crea una asignación de turnos con 'Comienza el reparto'.")
+                self.show_popup("Información", "No hay datos para estadísticas.\nPrimero crea un horario con 'Comienza el reparto'.")
         except Exception as e:
             self.show_popup("Error", f"Error al mostrar estadísticas: {str(e)}")
     
@@ -259,7 +259,7 @@ class WelcomeScreen(Screen):
                     weekend_count = scheduler.worker_weekend_counts.get(worker_id, 0)
                     worker_stats.append(f"• {worker_id}: {count} turnos ({weekend_count} fin semana)")
                 
-                stats_text = f"""Estadísticas del Calendario Actual:
+                stats_text = f"""Estadísticas del Horario Actual:
 
 📊 Cobertura General:
 • Total de espacios: {total_shifts}
@@ -272,7 +272,7 @@ class WelcomeScreen(Screen):
 🔄 Sistema en Tiempo Real: Activo
 🤖 IA Predictiva: Habilitada"""
             else:
-                stats_text = "No hay datos de asignación de turnos disponibles"
+                stats_text = "No hay datos de horario disponibles"
                 
         except Exception as e:
             stats_text = f"Error al generar estadísticas: {str(e)}"
@@ -395,7 +395,7 @@ class WelcomeScreen(Screen):
                 filename = exporter.export_schedule(app.scheduler)
                 self.show_popup("Éxito", f"PDF exportado: {filename}")
             else:
-                self.show_popup("Error", "No hay calendario para exportar")
+                self.show_popup("Error", "No hay horario para exportar")
         except Exception as e:
             self.show_popup("Error", f"Error al exportar PDF: {str(e)}")
     
@@ -1344,7 +1344,7 @@ class WorkerDetailsScreen(Screen):
                     # Schedule the PDF export on the main thread
                     Clock.schedule_once(lambda dt: self._handle_success(scheduler, cfg))
                 else:
-                    Clock.schedule_once(lambda dt: self.show_error("No se pudo generar un calendario válido."))
+                    Clock.schedule_once(lambda dt: self.show_error("No se pudo generar un horario válido."))
                     
             except Exception as e:
                 Clock.schedule_once(lambda dt: self.show_error(f"Error: {str(e)}"))
@@ -2814,7 +2814,7 @@ class CalendarViewScreen(Screen):
             if not app.schedule_config or not app.schedule_config.get('schedule'):
                 popup = Popup(
                     title='Error',
-                    content=Label(text='No hay calendario generado para ajustar'),
+                    content=Label(text='No hay horario generado para ajustar'),
                     size_hint=(None, None),
                     size=(400, 200)
                 )
@@ -3029,12 +3029,12 @@ class CalendarViewScreen(Screen):
             self.suggestions_layout.height = 40
 
     def _accept_suggestion(self, suggestion):
-        """Acepta una sugerencia y actualiza el reparto"""
+        """Acepta una sugerencia y actualiza el horario"""
         try:
             # Aplicar el intercambio
             new_schedule = self.current_adjustment_manager.apply_swap(suggestion)
             
-            # Actualizar el reparto en la aplicación
+            # Actualizar el horario en la aplicación
             app = App.get_running_app()
             app.schedule_config['schedule'] = new_schedule
             self.schedule = new_schedule
@@ -3085,7 +3085,7 @@ class CalendarViewScreen(Screen):
     def _finalize_adjustments(self):
         """Finaliza los ajustes y genera PDF actualizado"""
         try:
-            # Generar PDF con el reparto actualizado
+            # Generar PDF con el horario actualizado
             app = App.get_running_app()
             
             # Llamar al método de exportación PDF
@@ -3118,7 +3118,7 @@ class GenerateScheduleScreen(Screen):
         super().__init__(**kwargs)
 
         # A button to kick off scheduling
-        btn = Button(text="Generar reparto", size_hint=(1, None), height=50)
+        btn = Button(text="Generar horario", size_hint=(1, None), height=50)
         btn.bind(on_press=self.on_generate)
         self.add_widget(btn)
 
@@ -3141,7 +3141,7 @@ class GenerateScheduleScreen(Screen):
             scheduler = Scheduler(cfg)
             success   = scheduler.generate_schedule()
             if not success:
-                return self._error("No se pudo generar un reparto válido.")
+                return self._error("No se pudo generar un horario válido.")
 
             # Store for later display/review
             app.final_schedule = scheduler.schedule

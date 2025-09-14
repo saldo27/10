@@ -418,11 +418,23 @@ class LiveValidator:
         work_percentage = worker_data.get('work_percentage', 100)
         
         # Determine minimum days required between shifts
+        # FIXED: gap_between_shifts is the actual minimum days between shifts
+        # If gap_between_shifts=0, workers can work consecutive days (days_between=1 is OK)
+        # If gap_between_shifts=1, workers need at least 1 day gap (days_between=2 minimum)
         min_required_days_between = self.scheduler.gap_between_shifts + 1
         
         # Part-time workers might need a larger gap
         if work_percentage < 70:
             min_required_days_between = max(min_required_days_between, self.scheduler.gap_between_shifts + 2)
+        
+        # If gap_between_shifts is 0, allow consecutive work (no gap validation needed)
+        if self.scheduler.gap_between_shifts == 0:
+            return ValidationResult(
+                is_valid=True,
+                severity=ValidationSeverity.INFO,
+                message="Gap constraint not applicable (consecutive work allowed)",
+                constraint_type="gap_constraint"
+            )
         
         for assigned_date in worker_assignments:
             days_between = abs((shift_date - assigned_date).days)
@@ -534,14 +546,109 @@ class LiveValidator:
         """Find all constraint violations in the current schedule"""
         violations = []
         
+        # Track workers per day to detect double assignments
+        daily_assignments = {}
+        
         for date, shifts in self.scheduler.schedule.items():
+            if date not in daily_assignments:
+                daily_assignments[date] = []
+            
             for post_index, worker_id in enumerate(shifts):
                 if worker_id is not None:
-                    result = self.validate_assignment(worker_id, date, post_index)
+                    # Check for double assignments on the same day
+                    if worker_id in daily_assignments[date]:
+                        violations.append(ValidationResult(
+                            is_valid=False,
+                            severity=ValidationSeverity.ERROR,
+                            message=f"Worker {worker_id} assigned multiple times on {date.strftime('%Y-%m-%d')}",
+                            constraint_type="double_assignment"
+                        ))
+                    else:
+                        daily_assignments[date].append(worker_id)
+                    
+                    # Validate other constraints (availability, gaps, incompatibility)
+                    result = self._validate_existing_assignment(worker_id, date, post_index)
                     if not result.is_valid:
                         violations.append(result)
         
         return violations
+    
+    def _validate_existing_assignment(self, worker_id: str, shift_date: datetime, post_index: int) -> ValidationResult:
+        """
+        Validate an existing assignment without checking if worker is already assigned
+        (since we're validating existing assignments)
+        """
+        try:
+            # ENHANCED: Ensure data synchronization before validation
+            if hasattr(self.scheduler, '_ensure_data_synchronization'):
+                if not self.scheduler._ensure_data_synchronization():
+                    return ValidationResult(
+                        is_valid=False,
+                        severity=ValidationSeverity.ERROR,
+                        message="Data synchronization issues detected before validation",
+                        constraint_type="data_synchronization",
+                        suggestions=["Run schedule rebuild to fix synchronization issues"]
+                    )
+            
+            # Check basic availability (without double assignment check)
+            availability_result = self._check_worker_basic_availability(worker_id, shift_date)
+            if not availability_result.is_valid:
+                return availability_result
+            
+            # Check incompatibility constraints
+            incompatibility_result = self._check_incompatibility_constraints(worker_id, shift_date)
+            if not incompatibility_result.is_valid:
+                return incompatibility_result
+            
+            # Check gap constraints
+            gap_result = self._check_gap_constraints(worker_id, shift_date)
+            if not gap_result.is_valid:
+                return gap_result
+            
+            # Check weekend limits
+            weekend_result = self._check_weekend_limits(worker_id, shift_date)
+            if not weekend_result.is_valid:
+                return weekend_result
+            
+            # Check workload balance
+            workload_result = self._check_workload_balance(worker_id, shift_date)
+            if not workload_result.is_valid:
+                return workload_result
+                
+            return ValidationResult(
+                is_valid=True,
+                severity=ValidationSeverity.INFO,
+                message="Assignment is valid",
+                constraint_type="general"
+            )
+            
+        except Exception as e:
+            logging.error(f"Error validating existing assignment: {e}")
+            return ValidationResult(
+                is_valid=False,
+                severity=ValidationSeverity.ERROR,
+                message=f"Validation error: {str(e)}",
+                constraint_type="system_error"
+            )
+    
+    def _check_worker_basic_availability(self, worker_id: str, shift_date: datetime) -> ValidationResult:
+        """Check basic worker availability without double assignment check"""
+        # Check days off and work periods using existing constraint checker
+        if hasattr(self.scheduler, 'constraint_checker'):
+            if self.scheduler.constraint_checker._is_worker_unavailable(worker_id, shift_date):
+                return ValidationResult(
+                    is_valid=False,
+                    severity=ValidationSeverity.ERROR,
+                    message=f"Worker {worker_id} is unavailable on {shift_date.strftime('%Y-%m-%d')}",
+                    constraint_type="unavailable"
+                )
+        
+        return ValidationResult(
+            is_valid=True,
+            severity=ValidationSeverity.INFO,
+            message="Worker is available",
+            constraint_type="availability"
+        )
     
     def _check_schedule_completeness(self) -> ValidationResult:
         """Check if schedule is complete"""
