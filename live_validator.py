@@ -952,4 +952,3 @@ class LiveValidator:
                     violation_type=result.constraint_type,
                     message=result.message
                 )
-                )

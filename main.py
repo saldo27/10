@@ -3549,28 +3549,35 @@ class CalendarViewScreen(Screen):
             new_deviations = self.current_adjustment_manager.calculate_deviations()
             self.current_deviations = new_deviations
             
-            # Mostrar mensaje de éxito
-            success_popup = Popup(
-                title='Intercambio Aplicado',
-                content=Label(text='El intercambio se ha aplicado correctamente.\nLas desviaciones se han actualizado.'),
-                size_hint=(None, None),
-                size=(400, 200)
-            )
-            success_popup.open()
-            
-            # Cerrar ventana de ajuste y reabrir con datos actualizados
+            # Cerrar ventana de ajuste
             self.adjustment_popup.dismiss()
             
             # Actualizar vista del calendario
             if self.current_date:
                 self.display_month(self.current_date)
             
-            # Reabrir ventana de ajuste con datos actualizados
+            # Generar PDF con el horario actualizado
+            self._generate_summary_pdf_after_adjustment()
+            
+            # Mostrar mensaje de éxito y regresar al calendario
+            success_popup = Popup(
+                title='Intercambio Aplicado',
+                content=Label(text='El intercambio se ha aplicado correctamente.\nSe ha generado el PDF actualizado.\nRegresando al calendario...'),
+                size_hint=(None, None),
+                size=(450, 250)
+            )
+            
+            # Programar cierre del popup y regreso al calendario
             from kivy.clock import Clock
-            Clock.schedule_once(lambda dt: self._create_adjustment_popup(
-                self.current_adjustment_manager, 
-                new_deviations
-            ), 1)
+            def close_and_return(dt):
+                success_popup.dismiss()
+                # Asegurar que estamos en la pantalla Calendar
+                app = App.get_running_app()
+                if hasattr(app.root, 'current'):
+                    app.root.current = 'calendar'
+            
+            Clock.schedule_once(close_and_return, 3)  # Cerrar después de 3 segundos
+            success_popup.open()
             
         except Exception as e:
             logging.error(f"Error accepting suggestion: {e}")
@@ -3587,25 +3594,62 @@ class CalendarViewScreen(Screen):
         self.suggestions_layout.remove_widget(suggestion_box)
         self.suggestions_layout.height = max(0, self.suggestions_layout.height - 60)
 
+    def _generate_summary_pdf_after_adjustment(self):
+        """Genera un PDF summary_global después de aplicar un ajuste"""
+        try:
+            app = App.get_running_app()
+            
+            # Importar y crear statistics para el PDF
+            from statistics import StatisticsCalculator
+            
+            # Necesitamos crear un objeto scheduler temporal para las estadísticas
+            from scheduler import Scheduler
+            temp_scheduler = Scheduler(app.schedule_config)
+            temp_scheduler.schedule = app.schedule_config.get('schedule', {})
+            
+            # Crear objeto StatisticsCalculator
+            stats_calc = StatisticsCalculator(temp_scheduler)
+            
+            # Generar estadísticas completas
+            stats_data = stats_calc.gather_statistics()
+            
+            # Llamar al método de exportación PDF summary
+            self.export_summary_pdf(stats_data)
+            
+            logging.info("PDF summary_global generado después del ajuste")
+            
+        except Exception as e:
+            logging.error(f"Error generating summary PDF after adjustment: {e}")
+            # No mostrar error popup aquí ya que el éxito del ajuste es lo importante
+            print(f"DEBUG: Error generating PDF after adjustment: {e}")
+
     def _finalize_adjustments(self):
         """Finaliza los ajustes y genera PDF actualizado"""
         try:
-            # Generar PDF con el horario actualizado
-            app = App.get_running_app()
-            
-            # Llamar al método de exportación PDF
-            self.export_to_pdf(None)
-            
             # Cerrar ventana de ajuste
             self.adjustment_popup.dismiss()
             
-            # Mostrar mensaje de finalización
+            # Generar PDF summary_global con el horario actualizado
+            self._generate_summary_pdf_after_adjustment()
+            
+            # Mostrar mensaje de finalización y regresar al calendario
             final_popup = Popup(
                 title='Ajustes Finalizados',
-                content=Label(text='Los ajustes han sido finalizados.\nSe ha generado el PDF con el calendario actualizado.'),
+                content=Label(text='Los ajustes han sido finalizados.\nSe ha generado el PDF summary_global.\nRegresando al calendario...'),
                 size_hint=(None, None),
-                size=(450, 200)
+                size=(450, 250)
             )
+            
+            # Programar cierre del popup y regreso al calendario
+            from kivy.clock import Clock
+            def close_and_return(dt):
+                final_popup.dismiss()
+                # Asegurar que estamos en la pantalla Calendar
+                app = App.get_running_app()
+                if hasattr(app.root, 'current'):
+                    app.root.current = 'calendar'
+            
+            Clock.schedule_once(close_and_return, 3)  # Cerrar después de 3 segundos
             final_popup.open()
             
         except Exception as e:
