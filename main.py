@@ -3549,34 +3549,27 @@ class CalendarViewScreen(Screen):
             new_deviations = self.current_adjustment_manager.calculate_deviations()
             self.current_deviations = new_deviations
             
-            # Cerrar ventana de ajuste
-            self.adjustment_popup.dismiss()
-            
             # Actualizar vista del calendario
             if self.current_date:
                 self.display_month(self.current_date)
             
-            # Generar PDF con el horario actualizado
-            self._generate_summary_pdf_after_adjustment()
-            
-            # Mostrar mensaje de éxito y regresar al calendario
+            # Mostrar mensaje de éxito breve
             success_popup = Popup(
                 title='Intercambio Aplicado',
-                content=Label(text='El intercambio se ha aplicado correctamente.\nSe ha generado el PDF actualizado.\nRegresando al calendario...'),
+                content=Label(text='El intercambio se ha aplicado correctamente.\nLas desviaciones se han actualizado.'),
                 size_hint=(None, None),
-                size=(450, 250)
+                size=(400, 200)
             )
             
-            # Programar cierre del popup y regreso al calendario
+            # Cerrar el popup después de 2 segundos y reabrir la ventana de ajuste actualizada
             from kivy.clock import Clock
-            def close_and_return(dt):
+            def close_and_refresh(dt):
                 success_popup.dismiss()
-                # Asegurar que estamos en la pantalla Calendar
-                app = App.get_running_app()
-                if hasattr(app.root, 'current'):
-                    app.root.current = 'calendar'
+                # Cerrar ventana actual y reabrir con datos actualizados
+                self.adjustment_popup.dismiss()
+                self._create_adjustment_popup(self.current_adjustment_manager, new_deviations)
             
-            Clock.schedule_once(close_and_return, 3)  # Cerrar después de 3 segundos
+            Clock.schedule_once(close_and_refresh, 2)
             success_popup.open()
             
         except Exception as e:
@@ -3644,10 +3637,10 @@ class CalendarViewScreen(Screen):
             from kivy.clock import Clock
             def close_and_return(dt):
                 final_popup.dismiss()
-                # Asegurar que estamos en la pantalla Calendar
+                # Asegurar que estamos en la pantalla Calendar correcta
                 app = App.get_running_app()
                 if hasattr(app.root, 'current'):
-                    app.root.current = 'calendar'
+                    app.root.current = 'calendar_view'
             
             Clock.schedule_once(close_and_return, 3)  # Cerrar después de 3 segundos
             final_popup.open()
