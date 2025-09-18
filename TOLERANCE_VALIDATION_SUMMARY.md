@@ -1,14 +1,14 @@
-# IMPLEMENTACIÓN COMPLETADA: Sistema de Validación de Tolerancia ±7%
+# IMPLEMENTACIÓN COMPLETADA: Sistema de Validación de Tolerancia ±8%
 
 ## ✅ **OBJETIVO CUMPLIDO**
-El número de shifts asignados está mejor ajustado al target_shift con tolerancia ±7% tanto para shifts regulares como para shifts de weekend.
+El número de shifts asignados está mejor ajustado al target_shift con tolerancia ±8% tanto para shifts regulares como para shifts de weekend.
 
 ## 🏗️ **COMPONENTES IMPLEMENTADOS**
 
 ### 1. **ShiftToleranceValidator** (`shift_tolerance_validator.py`)
-- **Función**: Validador de tolerancia ±7% para shifts regulares y de weekend
+- **Función**: Validador de tolerancia ±8% para shifts regulares y de weekend
 - **Características**:
-  - Calcula límites de tolerancia (min/max) basados en target_shifts ±7%
+  - Calcula límites de tolerancia (min/max) basados en target_shifts ±8%
   - Valida workers individualmente para shifts generales y de weekend
   - Cuenta shifts asignados desde el horario final del scheduler
   - Proporciona sugerencias de ajuste para workers fuera de tolerancia
@@ -55,7 +55,7 @@ Worker LOW: 5/5 shifts (rango: 4-5, desviación: 0.0%)
 ## 📊 **FUNCIONALIDADES CLAVE**
 
 ### Validación de Tolerancia
-- ✅ Calcula rango permitido: `target_shifts ± 7%`
+- ✅ Calcula rango permitido: `target_shifts ± 8%`
 - ✅ Valida shifts regulares individualmente por worker
 - ✅ Valida shifts de weekend individualmente por worker
 - ✅ Identifica workers fuera de tolerancia
@@ -77,7 +77,7 @@ Worker LOW: 5/5 shifts (rango: 4-5, desviación: 0.0%)
 
 **ANTES**: No había validación de tolerancia sistemática
 **DESPUÉS**: 
-- ✅ Validación automática ±7% para shifts regulares y weekend
+- ✅ Validación automática ±8% para shifts regulares y weekend
 - ✅ Reportes detallados de cumplimiento de tolerancia  
 - ✅ Sugerencias de ajuste automático
 - ✅ Integración completa en el flujo de generación
@@ -86,9 +86,9 @@ Worker LOW: 5/5 shifts (rango: 4-5, desviación: 0.0%)
 ## 📈 **MÉTRICAS DE ÉXITO**
 
 En todas las pruebas realizadas:
-- **General**: `2/2 workers dentro de tolerancia ±7%`
-- **Weekend**: `2/2 workers dentro de tolerancia ±7%`
-- **Resultado**: `🎯 ¡EXCELENTE! Todos los workers están dentro de la tolerancia ±7%`
+- **General**: `2/2 workers dentro de tolerancia ±8%`
+- **Weekend**: `2/2 workers dentro de tolerancia ±8%`
+- **Resultado**: `🎯 ¡EXCELENTE! Todos los workers están dentro de la tolerancia ±8%`
 
 ## 🔧 **USO**
 

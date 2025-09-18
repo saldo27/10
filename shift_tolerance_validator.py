@@ -1,13 +1,13 @@
 """
 Validador de tolerancia de shifts
-Valida que los shifts asignados estén dentro del rango de tolerancia +/-7% del target_shift
+Valida que los shifts asignados estén dentro del rango de tolerancia +/-8% del target_shift
 """
 import logging
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime, timedelta
 
 class ShiftToleranceValidator:
-    """Validador para asegurar que los shifts asignados respeten la tolerancia de +/-7%"""
+    """Validador para asegurar que los shifts asignados respeten la tolerancia de +/-8%"""
     
     def __init__(self, scheduler):
         """
@@ -19,7 +19,7 @@ class ShiftToleranceValidator:
         self.scheduler = scheduler
         self.workers_data = scheduler.workers_data
         self.schedule = scheduler.schedule
-        self.tolerance_percentage = 7.0  # +/-7% tolerance as required
+        self.tolerance_percentage = 8.0  # +/-8% tolerance as requested
         
     def calculate_tolerance_bounds(self, target_shifts: int) -> Tuple[int, int]:
         """

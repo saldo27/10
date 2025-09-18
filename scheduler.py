@@ -125,7 +125,7 @@ class Scheduler:
             self.stats = StatisticsCalculator(self)
             self.constraint_checker = ConstraintChecker(self)  
             self.data_manager = DataManager(self)
-            # Initialize shift tolerance validator for +/-7% validation
+            # Initialize shift tolerance validator for +/-9% validation
             self.tolerance_validator = ShiftToleranceValidator(self)
             # self.schedule_builder will be initialized later in generate_schedule
             self.eligibility_tracker = WorkerEligibilityTracker(
@@ -422,7 +422,12 @@ class Scheduler:
                         # Update worker assignments
                         self.worker_assignments[worker_id].add(date)
                     
-                        # Update posts worked
+                        # Update posts worked - with robust protection
+                        if worker_id not in self.worker_posts:
+                            self.worker_posts[worker_id] = set()
+                        elif not isinstance(self.worker_posts[worker_id], set):
+                            logging.warning(f"Fixing corrupted worker_posts[{worker_id}] - was {type(self.worker_posts[worker_id])}")
+                            self.worker_posts[worker_id] = set()
                         self.worker_posts[worker_id].add(post_idx)
                     
                         # Update weekday counts

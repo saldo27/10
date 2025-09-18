@@ -31,13 +31,13 @@ class IterativeOptimizer:
     until tolerance requirements are met.
     """
     
-    def __init__(self, max_iterations: int = 15, tolerance: float = 0.07):
+    def __init__(self, max_iterations: int = 15, tolerance: float = 0.08):
         """
-        Initialize the iterative optimizer with enhanced controls.
+        Initialize the iterative optimizer with enhanced redistribution algorithms.
         
         Args:
-            max_iterations: Maximum number of optimization attempts (reduced for efficiency)
-            tolerance: Tolerance percentage (0.07 = 7%)
+            max_iterations: Maximum number of optimization iterations (default: 15)
+            tolerance: Tolerance percentage (0.08 = 8%)
         """
         self.max_iterations = max_iterations
         self.tolerance = tolerance
@@ -71,10 +71,12 @@ class IterativeOptimizer:
             OptimizationResult with final optimization status
         """
         logging.info("🔄 Starting iterative schedule optimization...")
+        logging.info(f"Debug: Optimizer called with {len(schedule)} schedule entries and {len(workers_data)} workers")
         
         # Use the scheduler's tolerance validator
         if hasattr(scheduler_core, 'tolerance_validator'):
             validator = scheduler_core.tolerance_validator
+            logging.info("Debug: Using scheduler's tolerance validator")
         else:
             logging.error("Scheduler core missing tolerance validator")
             return OptimizationResult(
@@ -164,7 +166,7 @@ class IterativeOptimizer:
                     workers_data, schedule_config, iteration, optimization_intensity
                 )
             except Exception as e:
-                logging.error(f"❌ Error in iteration {iteration}: {e}")
+                logging.error(f"❌ Error in iteration {iteration}: {e}", exc_info=True)
                 continue
         
         # Return best result found
@@ -222,8 +224,9 @@ class IterativeOptimizer:
             )
         
         # Strategy 3: Apply random perturbations based on intensity
-        if iteration > 2:  # Apply perturbations after initial iterations
-            perturbation_intensity = intensity * 0.5  # Scale perturbations
+        total_violations = len(general_violations) + len(weekend_violations)
+        if iteration > 1 and (total_violations > 15 or self.stagnation_counter > 1):  # Apply perturbations earlier for difficult cases
+            perturbation_intensity = min(intensity * 0.8, 0.4)  # More aggressive perturbations
             optimized_schedule = self._apply_random_perturbations(
                 optimized_schedule, workers_data, schedule_config, intensity=perturbation_intensity
             )
@@ -235,16 +238,73 @@ class IterativeOptimizer:
         """Redistribute general shifts to fix tolerance violations with smart targeting."""
         logging.info(f"   📊 Redistributing general shifts for {len(violations)} workers")
         
-        optimized_schedule = copy.deepcopy(schedule)
-        worker_names = [w['name'] for w in workers_data]
-        
-        # Separate workers by violation type with priority scoring
-        need_more_shifts = []
-        have_excess_shifts = []
-        
-        for violation in violations:
-            worker_name = violation['worker']
-            deviation = violation['deviation_percentage']
+        try:
+            optimized_schedule = copy.deepcopy(schedule)
+            
+            # Debug: Log workers_data structure
+            logging.info(f"Debug: workers_data type: {type(workers_data)}")
+            logging.info(f"Debug: workers_data length: {len(workers_data)}")
+            if workers_data:
+                logging.info(f"Debug: First worker structure: {workers_data[0]}")
+                logging.info(f"Debug: Available keys: {list(workers_data[0].keys()) if isinstance(workers_data[0], dict) else 'Not a dict'}")
+            
+            # Extract worker names safely
+            worker_names = []
+            for i, w in enumerate(workers_data):
+                if isinstance(w, dict):
+                    if 'id' in w:
+                        # Handle both string and numeric IDs
+                        worker_id = w['id']
+                        if isinstance(worker_id, str) and worker_id.startswith('Worker'):
+                            worker_names.append(worker_id)  # Already has "Worker" prefix
+                        else:
+                            worker_names.append(f"Worker {worker_id}")  # Add prefix for numeric
+                    elif 'name' in w:
+                        worker_names.append(w['name'])
+                    else:
+                        worker_names.append(f"Worker {i+1}")  # Fallback
+                        logging.warning(f"Worker {i} missing id/name, using fallback")
+                else:
+                    worker_names.append(f"Worker {i+1}")  # Fallback for non-dict
+                    logging.warning(f"Worker {i} is not a dict: {type(w)}")
+            
+            # Debug: Log the structures
+            logging.info(f"Debug: Worker names extracted: {worker_names[:5]}...")  # First 5
+            logging.info(f"Debug: Violations structure: {violations}")
+            
+            # Separate workers by violation type with priority scoring
+            need_more_shifts = []
+            have_excess_shifts = []
+            
+            for violation in violations:
+                logging.info(f"Debug: Processing violation: {violation}")
+                worker_name = violation['worker']
+                deviation = violation['deviation_percentage']
+                
+                logging.info(f"Debug: worker_name='{worker_name}', deviation={deviation}")
+                
+                if deviation < -self.tolerance * 100:  # Worker needs more shifts
+                    priority = abs(deviation) / 100.0  # Higher deviation = higher priority
+                    need_more_shifts.append({
+                        'worker': worker_name,
+                        'shortage': abs(violation['shortage']),
+                        'priority': priority,
+                        'deviation': deviation
+                    })
+                    logging.info(f"Debug: Added to need_more_shifts: {worker_name}")
+                elif deviation > self.tolerance * 100:  # Worker has excess shifts
+                    priority = deviation / 100.0
+                    have_excess_shifts.append({
+                        'worker': worker_name,
+                        'excess': violation['excess'],
+                        'priority': priority,
+                        'deviation': deviation
+                    })
+                    logging.info(f"Debug: Added to have_excess_shifts: {worker_name}")
+                    
+        except Exception as e:
+            logging.error(f"❌ Error in _redistribute_general_shifts: {e}", exc_info=True)
+            return schedule  # Return original schedule on error
             
             if deviation < -self.tolerance * 100:  # Worker needs more shifts
                 priority = abs(deviation) / 100.0  # Higher deviation = higher priority
@@ -271,27 +331,38 @@ class IterativeOptimizer:
         
         # Smart redistribution algorithm
         redistributions_made = 0
-        max_redistributions = min(20, len(violations) * 2)  # Limit to prevent over-optimization
+        max_redistributions = min(30, len(violations) * 3)  # More aggressive redistribution
         
         for excess_info in have_excess_shifts:
             if redistributions_made >= max_redistributions:
                 break
                 
             excess_worker = excess_info['worker']
-            shifts_to_remove = min(excess_info['excess'], 3)  # More aggressive removal
+            shifts_to_remove = min(excess_info['excess'], 4)  # More aggressive removal (up to 4 shifts)
             
             # Find shifts assigned to this worker, prioritize recent dates
             worker_shifts = []
-            for date_str, assignments in optimized_schedule.items():
-                for shift_type, workers in assignments.items():
-                    if excess_worker in workers:
-                        worker_shifts.append((date_str, shift_type, workers))
+            for date_key, assignments in optimized_schedule.items():
+                # Handle different schedule formats
+                if isinstance(assignments, dict):
+                    # Format: {date: {'Morning': [workers], 'Afternoon': [workers]}}
+                    for shift_type, workers in assignments.items():
+                        if excess_worker in workers:
+                            worker_shifts.append((date_key, shift_type, workers))
+                elif isinstance(assignments, list):
+                    # Format: {date: [worker1, worker2, worker3]} - positional
+                    for post_idx, worker in enumerate(assignments):
+                        if worker == excess_worker:
+                            worker_shifts.append((date_key, f"Post_{post_idx}", assignments))
+                else:
+                    logging.warning(f"Unknown schedule format for {date_key}: {type(assignments)}")
+                    continue
             
             # Sort by date (prefer redistributing from later dates)
             worker_shifts.sort(key=lambda x: x[0], reverse=True)
             
             shifts_removed = 0
-            for date_str, shift_type, workers in worker_shifts:
+            for date_key, shift_type, workers in worker_shifts:
                 if shifts_removed >= shifts_to_remove:
                     break
                 
@@ -307,7 +378,7 @@ class IterativeOptimizer:
                     
                     # Check if worker can take this shift
                     if need_worker not in workers and self._can_worker_take_shift(
-                        need_worker, date_str, shift_type, optimized_schedule, workers_data
+                        need_worker, date_key, shift_type, optimized_schedule, workers_data
                     ):
                         # Calculate priority for this assignment
                         assignment_priority = need_info['priority']
@@ -322,8 +393,19 @@ class IterativeOptimizer:
                 
                 # Make the reassignment
                 if best_recipient:
-                    workers.remove(excess_worker)
-                    workers.append(best_recipient)
+                    # Handle both list and dict formats for reassignment
+                    if isinstance(workers, list):
+                        # Find and replace in the list
+                        try:
+                            idx = workers.index(excess_worker)
+                            workers[idx] = best_recipient
+                        except ValueError:
+                            logging.warning(f"Worker {excess_worker} not found in list {workers}")
+                            continue
+                    else:
+                        # Dictionary format (original logic)
+                        workers.remove(excess_worker)
+                        workers.append(best_recipient)
                     
                     # Update tracking
                     for need_info in need_more_shifts:
@@ -334,19 +416,21 @@ class IterativeOptimizer:
                     shifts_removed += 1
                     redistributions_made += 1
                     
-                    logging.info(f"      🔄 Moved {shift_type} from {excess_worker} to {best_recipient} on {date_str}")
+                    # Format date for display
+                    date_display = date_key.strftime('%Y-%m-%d') if isinstance(date_key, datetime) else str(date_key)
+                    logging.info(f"      🔄 Moved {shift_type} from {excess_worker} to {best_recipient} on {date_display}")
         
         logging.info(f"   ✅ Made {redistributions_made} general shift redistributions")
         return optimized_schedule
     
-    def _can_worker_take_shift(self, worker_name: str, date_str: str, shift_type: str, 
+    def _can_worker_take_shift(self, worker_name: str, date_key, shift_type: str, 
                               schedule: Dict, workers_data: List[Dict]) -> bool:
         """
         Check if a worker can take a specific shift based on constraints.
         
         Args:
-            worker_name: Name of the worker
-            date_str: Date of the shift (YYYY-MM-DD format)
+            worker_name: Name of the worker (e.g., "Worker 12")
+            date_key: Date of the shift (datetime object or string)
             shift_type: Type of shift (Morning, Afternoon, Night, etc.)
             schedule: Current schedule
             workers_data: Worker configuration data
@@ -355,13 +439,30 @@ class IterativeOptimizer:
             bool: True if worker can take the shift
         """
         try:
-            # Parse date
-            shift_date = datetime.strptime(date_str, "%Y-%m-%d")
+            # Parse date from both datetime and string formats
+            if isinstance(date_key, datetime):
+                shift_date = date_key
+            else:
+                shift_date = datetime.strptime(date_key, "%Y-%m-%d")
             
-            # Find worker data
+            # Extract worker ID from worker name 
+            worker_id = None
+            if isinstance(worker_name, str):
+                if worker_name.startswith('Worker_'):
+                    worker_id = worker_name  # Direct match (e.g., "Worker_A")
+                elif worker_name.startswith('Worker ') and len(worker_name) > 7:
+                    worker_id = worker_name[7:]  # Extract after "Worker " (e.g., "Worker 12" -> "12")
+                    try:
+                        worker_id = int(worker_id)  # Convert to int if numeric
+                    except ValueError:
+                        pass  # Keep as string if non-numeric
+                else:
+                    worker_id = worker_name  # Use as-is
+            
+            # Find worker data using ID
             worker_data = None
             for w in workers_data:
-                if w['name'] == worker_name:
+                if w.get('id') == worker_id or str(w.get('id')) == str(worker_id):
                     worker_data = w
                     break
             
@@ -378,9 +479,16 @@ class IterativeOptimizer:
                     return False
             
             # Check if worker already has a shift on this date
-            if date_str in schedule:
-                for existing_shift, existing_workers in schedule[date_str].items():
-                    if worker_name in existing_workers:
+            if date_key in schedule:
+                assignments = schedule[date_key]
+                if isinstance(assignments, dict):
+                    # Dictionary format: check all shift types
+                    for existing_shift, existing_workers in assignments.items():
+                        if worker_name in existing_workers:
+                            return False  # Worker already assigned on this date
+                elif isinstance(assignments, list):
+                    # List format: check if worker is in the list
+                    if worker_name in assignments:
                         return False  # Worker already assigned on this date
             
             # Check consecutive shift limits (basic check)
@@ -429,11 +537,18 @@ class IterativeOptimizer:
         
         # Get all weekend dates
         weekend_dates = []
-        for date_str in optimized_schedule.keys():
+        for date_key in optimized_schedule.keys():
             try:
-                date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                # Handle both datetime objects and string dates
+                if isinstance(date_key, datetime):
+                    date_obj = date_key
+                    date_str = date_key.strftime("%Y-%m-%d")
+                else:
+                    date_obj = datetime.strptime(date_key, "%Y-%m-%d")
+                    date_str = date_key
+                
                 if date_obj.weekday() in [5, 6]:  # Saturday or Sunday
-                    weekend_dates.append(date_str)
+                    weekend_dates.append(date_key)  # Use original key format
             except:
                 continue
         
@@ -451,16 +566,28 @@ class IterativeOptimizer:
             
             # Find weekend shifts for this worker
             weekend_shifts = []
-            for date_str in weekend_dates:
-                if date_str in optimized_schedule:
-                    for shift_type, workers in optimized_schedule[date_str].items():
-                        if excess_worker in workers:
-                            weekend_shifts.append((date_str, shift_type, workers))
+            for date_key in weekend_dates:
+                if date_key in optimized_schedule:
+                    assignments = optimized_schedule[date_key]
+                    # Handle different schedule formats
+                    if isinstance(assignments, dict):
+                        # Format: {date: {'Morning': [workers], 'Afternoon': [workers]}}
+                        for shift_type, workers in assignments.items():
+                            if excess_worker in workers:
+                                weekend_shifts.append((date_key, shift_type, workers))
+                    elif isinstance(assignments, list):
+                        # Format: {date: [worker1, worker2, worker3]} - positional
+                        for post_idx, worker in enumerate(assignments):
+                            if worker == excess_worker:
+                                weekend_shifts.append((date_key, f"Post_{post_idx}", assignments))
+                    else:
+                        logging.warning(f"Unknown weekend schedule format for {date_key}: {type(assignments)}")
+                        continue
             
             # Redistribute weekend shifts
             shifts_to_redistribute = min(len(weekend_shifts), excess_info['excess'])
             
-            for i, (date_str, shift_type, workers) in enumerate(weekend_shifts):
+            for i, (date_key, shift_type, workers) in enumerate(weekend_shifts):
                 if i >= shifts_to_redistribute or redistributions_made >= max_redistributions:
                     break
                 
@@ -476,7 +603,7 @@ class IterativeOptimizer:
                     
                     # Check if worker can take this weekend shift
                     if need_worker not in workers and self._can_worker_take_shift(
-                        need_worker, date_str, shift_type, optimized_schedule, workers_data
+                        need_worker, date_key, shift_type, optimized_schedule, workers_data
                     ):
                         # Calculate assignment priority
                         assignment_priority = need_info['priority']
@@ -486,7 +613,11 @@ class IterativeOptimizer:
                             assignment_priority *= 2.0
                         
                         # Bonus for balanced weekend distribution
-                        weekend_day = datetime.strptime(date_str, "%Y-%m-%d").weekday()
+                        if isinstance(date_key, datetime):
+                            weekend_day = date_key.weekday()
+                        else:
+                            weekend_day = datetime.strptime(date_key, "%Y-%m-%d").weekday()
+                        
                         if weekend_day == 5:  # Saturday
                             assignment_priority *= 1.1
                         
@@ -496,8 +627,19 @@ class IterativeOptimizer:
                 
                 # Make the weekend reassignment
                 if best_recipient:
-                    workers.remove(excess_worker)
-                    workers.append(best_recipient)
+                    # Handle both list and dict formats for reassignment
+                    if isinstance(workers, list):
+                        # Find and replace in the list
+                        try:
+                            idx = workers.index(excess_worker)
+                            workers[idx] = best_recipient
+                        except ValueError:
+                            logging.warning(f"Weekend worker {excess_worker} not found in list {workers}")
+                            continue
+                    else:
+                        # Dictionary format (original logic)
+                        workers.remove(excess_worker)
+                        workers.append(best_recipient)
                     
                     # Update tracking
                     for need_info in need_more_weekends:
@@ -506,9 +648,14 @@ class IterativeOptimizer:
                             break
                     
                     redistributions_made += 1
-                    day_name = datetime.strptime(date_str, "%Y-%m-%d").strftime('%A')
+                    if isinstance(date_key, datetime):
+                        day_name = date_key.strftime('%A')
+                        date_display = date_key.strftime('%Y-%m-%d')
+                    else:
+                        day_name = datetime.strptime(date_key, "%Y-%m-%d").strftime('%A')
+                        date_display = date_key
                     
-                    logging.info(f"      🔄 Weekend: Moved {shift_type} from {excess_worker} to {best_recipient} on {day_name} {date_str}")
+                    logging.info(f"      🔄 Weekend: Moved {shift_type} from {excess_worker} to {best_recipient} on {day_name} {date_display}")
         
         logging.info(f"   ✅ Made {redistributions_made} weekend shift redistributions")
         return optimized_schedule
@@ -583,7 +730,7 @@ class IterativeOptimizer:
             return True
         
         # Stop if violations are acceptably low
-        if current_violations <= 3 and iteration >= 5:
+        if current_violations <= 5 and iteration >= 8:  # More lenient criteria
             logging.info(f"   ✅ Stopping due to acceptable violation level ({current_violations})")
             return True
         
@@ -630,38 +777,63 @@ class IterativeOptimizer:
             original_schedule = validator.schedule
             validator.schedule = current_schedule
             
+            logging.info("Debug: Creating validation report...")
+            
             # Get violations using existing methods
             general_violations = []
             weekend_violations = []
             
             # Check all workers for general violations
             general_outside = validator.get_workers_outside_tolerance(is_weekend_only=False)
+            logging.info(f"Debug: Found {len(general_outside)} workers outside general tolerance")
+            
             for worker_info in general_outside:
+                worker_id = worker_info.get('worker_id', 'Unknown')
+                worker_name = f"Worker {worker_id}" if str(worker_id).isdigit() else str(worker_id)
+                
+                # Calculate difference (assigned - target)
+                assigned = worker_info.get('assigned_shifts', 0)
+                target = worker_info.get('target_shifts', 0)
+                difference = assigned - target
+                
                 general_violations.append({
-                    'worker': worker_info.get('worker_id', 'Unknown'),
+                    'worker': worker_name,
                     'deviation_percentage': worker_info.get('deviation_percentage', 0),
-                    'shortage': max(0, -worker_info.get('difference', 0)),
-                    'excess': max(0, worker_info.get('difference', 0))
+                    'shortage': max(0, -difference),  # When assigned < target
+                    'excess': max(0, difference)      # When assigned > target
                 })
             
             # Check all workers for weekend violations  
             weekend_outside = validator.get_workers_outside_tolerance(is_weekend_only=True)
+            logging.info(f"Debug: Found {len(weekend_outside)} workers outside weekend tolerance")
+            
             for worker_info in weekend_outside:
+                worker_id = worker_info.get('worker_id', 'Unknown')
+                worker_name = f"Worker {worker_id}" if str(worker_id).isdigit() else str(worker_id)
+                
+                # Calculate difference (assigned - target)
+                assigned = worker_info.get('assigned_shifts', 0)
+                target = worker_info.get('target_shifts', 0)
+                difference = assigned - target
+                
                 weekend_violations.append({
-                    'worker': worker_info.get('worker_id', 'Unknown'),
+                    'worker': worker_name,
                     'deviation_percentage': worker_info.get('deviation_percentage', 0),
-                    'shortage': max(0, -worker_info.get('difference', 0)),
-                    'excess': max(0, worker_info.get('difference', 0))
+                    'shortage': max(0, -difference),  # When assigned < target
+                    'excess': max(0, difference)      # When assigned > target
                 })
             
             # Restore original schedule
             validator.schedule = original_schedule
             
-            return {
+            report = {
                 'general_shift_violations': general_violations,
                 'weekend_shift_violations': weekend_violations,
                 'total_violations': len(general_violations) + len(weekend_violations)
             }
+            
+            logging.info(f"Debug: Created validation report with {report['total_violations']} total violations")
+            return report
             
         except Exception as e:
             logging.error(f"Error creating validation report: {e}")
