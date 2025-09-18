@@ -13,6 +13,7 @@ from utilities import DateTimeUtils
 from statistics import StatisticsCalculator
 from exceptions import SchedulerError
 from worker_eligibility import WorkerEligibilityTracker
+from shift_tolerance_validator import ShiftToleranceValidator
 
 # Initialize logging using the configuration module
 setup_logging()
@@ -124,6 +125,8 @@ class Scheduler:
             self.stats = StatisticsCalculator(self)
             self.constraint_checker = ConstraintChecker(self)  
             self.data_manager = DataManager(self)
+            # Initialize shift tolerance validator for +/-7% validation
+            self.tolerance_validator = ShiftToleranceValidator(self)
             # self.schedule_builder will be initialized later in generate_schedule
             self.eligibility_tracker = WorkerEligibilityTracker(
                 self.workers_data,

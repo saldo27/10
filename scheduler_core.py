@@ -14,6 +14,8 @@ from exceptions import SchedulerError
 from optimization_metrics import OptimizationMetrics
 from operation_prioritizer import OperationPrioritizer
 from progress_monitor import ProgressMonitor
+from iterative_optimizer import IterativeOptimizer
+from shift_tolerance_validator import ShiftToleranceValidator
 
 
 class SchedulerCore:
@@ -40,7 +42,11 @@ class SchedulerCore:
         self.prioritizer = OperationPrioritizer(scheduler, self.metrics)
         self.progress_monitor = None  # Will be initialized in orchestrate_schedule_generation
         
-        logging.info("SchedulerCore initialized with enhanced optimization systems")
+        # Initialize tolerance validation and iterative optimization
+        self.tolerance_validator = ShiftToleranceValidator(scheduler)
+        self.iterative_optimizer = IterativeOptimizer(max_iterations=15, tolerance=0.07)
+        
+        logging.info("SchedulerCore initialized with enhanced optimization systems and tolerance validation")
     
     def orchestrate_schedule_generation(self, max_improvement_loops: int = 70) -> bool:
         """
@@ -306,6 +312,15 @@ class SchedulerCore:
                 logging.info(f"📊 Insights finales: {insights['significant_improvements']} mejoras significativas, "
                            f"tasa de éxito: {insights['average_operations_success_rate']:.2f}")
 
+            # TOLERANCE VALIDATION AND ITERATIVE OPTIMIZATION
+            logging.info("🔍 Starting tolerance validation and iterative optimization...")
+            success = self._apply_tolerance_optimization()
+            
+            if not success:
+                logging.warning("⚠️  Tolerance optimization completed with remaining violations")
+            else:
+                logging.info("✅ All tolerance requirements satisfied!")
+
             return True
 
         except Exception as e:
@@ -469,6 +484,26 @@ class SchedulerCore:
                 empty_percentage = (len(empty_shifts_final) / total_slots_final) * 100
                 logging.warning(f"Final schedule has {len(empty_shifts_final)} empty shifts ({empty_percentage:.1f}%) out of {total_slots_final} total slots.")
             
+            # Perform tolerance validation for +/-7% requirement
+            logging.info("Performing shift tolerance validation (+/-7%)...")
+            self.scheduler.tolerance_validator.log_tolerance_report()
+            
+            # Check if any workers are significantly outside tolerance
+            outside_tolerance_general = self.scheduler.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=False)
+            outside_tolerance_weekend = self.scheduler.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=True)
+            
+            if outside_tolerance_general:
+                logging.warning(f"{len(outside_tolerance_general)} workers are outside +/-7% tolerance for general shifts")
+                for worker_info in outside_tolerance_general:
+                    if abs(worker_info['deviation_percentage']) > 10:  # Flag significant deviations
+                        logging.error(f"Worker {worker_info['worker_id']} has significant deviation: {worker_info['deviation_percentage']:.1f}%")
+            
+            if outside_tolerance_weekend:
+                logging.warning(f"{len(outside_tolerance_weekend)} workers are outside +/-7% tolerance for weekend shifts")
+                for worker_info in outside_tolerance_weekend:
+                    if abs(worker_info['deviation_percentage']) > 10:  # Flag significant deviations
+                        logging.error(f"Worker {worker_info['worker_id']} has significant weekend deviation: {worker_info['deviation_percentage']:.1f}%")
+            
             # Log final summary
             self.scheduler.log_schedule_summary("Final Generated Schedule")
             
@@ -476,4 +511,94 @@ class SchedulerCore:
             
         except Exception as e:
             logging.error(f"Error during final validation: {str(e)}", exc_info=True)
+            return False
+    
+    def _apply_tolerance_optimization(self) -> bool:
+        """
+        Apply iterative optimization to meet ±7% tolerance requirements.
+        
+        Returns:
+            bool: True if all tolerance requirements are satisfied
+        """
+        logging.info("🔄 Starting tolerance optimization with iterative refinement...")
+        
+        try:
+            # Get current schedule data
+            schedule_config = {
+                'start_date': self.start_date,
+                'end_date': self.end_date,
+                'num_shifts': self.config.get('num_shifts', 3),
+                'holidays': self.config.get('holidays', [])
+            }
+            
+            # Run iterative optimization
+            result = self.iterative_optimizer.optimize_schedule(
+                scheduler_core=self,
+                schedule=self.scheduler.schedule,
+                workers_data=self.workers_data,
+                schedule_config=schedule_config
+            )
+            
+            # Update schedule if optimization was successful
+            if result.schedule and result.total_violations < 20:  # Accept if reasonable improvement
+                logging.info(f"📈 Applying optimized schedule (violations reduced to {result.total_violations})")
+                self.scheduler.schedule = result.schedule
+                
+                # Resynchronize tracking data
+                self.scheduler.schedule_builder._synchronize_tracking_data()
+                
+            # Log optimization summary
+            summary = self.iterative_optimizer.get_optimization_summary()
+            if summary.get('total_iterations', 0) > 0:
+                logging.info(f"📊 Optimization Summary:")
+                logging.info(f"   Iterations: {summary['total_iterations']}")
+                logging.info(f"   Initial violations: {summary['initial_violations']}")
+                logging.info(f"   Final violations: {summary['final_violations']}")
+                logging.info(f"   Total improvement: {summary['improvement']}")
+                logging.info(f"   Average improvement rate: {summary['average_improvement_rate']:.2f}")
+                logging.info(f"   Convergence: {'Yes' if summary['convergence_achieved'] else 'No'}")
+                
+                if summary['stagnation_counter'] > 0:
+                    logging.info(f"   Final stagnation: {summary['stagnation_counter']} iterations")
+            
+            # Final tolerance validation using existing methods
+            original_schedule = self.tolerance_validator.schedule
+            self.tolerance_validator.schedule = self.scheduler.schedule
+            
+            # Get violation counts
+            general_outside = self.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=False)
+            weekend_outside = self.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=True)
+            
+            general_violations = len(general_outside)
+            weekend_violations = len(weekend_outside)
+            total_violations = general_violations + weekend_violations
+            
+            # Restore original schedule reference
+            self.tolerance_validator.schedule = original_schedule
+            
+            # Log validation results
+            if total_violations == 0:
+                logging.info("✅ ALL TOLERANCE REQUIREMENTS SATISFIED!")
+                return True
+            else:
+                logging.warning(f"⚠️  {total_violations} tolerance violations remain after optimization")
+                logging.info("📋 Remaining violations summary:")
+                
+                # Log specific remaining violations
+                if general_violations > 0:
+                    logging.warning(f"   General shift violations: {general_violations}")
+                    for worker_info in general_outside:
+                        if abs(worker_info.get('deviation_percentage', 0)) > 10:
+                            logging.error(f"   Worker {worker_info.get('worker_id', 'Unknown')} deviation: {worker_info.get('deviation_percentage', 0):.1f}%")
+                
+                if weekend_violations > 0:
+                    logging.warning(f"   Weekend shift violations: {weekend_violations}")
+                    for worker_info in weekend_outside:
+                        if abs(worker_info.get('deviation_percentage', 0)) > 10:
+                            logging.error(f"   Worker {worker_info.get('worker_id', 'Unknown')} weekend deviation: {worker_info.get('deviation_percentage', 0):.1f}%")
+                
+                return False
+        
+        except Exception as e:
+            logging.error(f"Error during tolerance optimization: {str(e)}", exc_info=True)
             return False

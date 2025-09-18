@@ -1310,6 +1310,81 @@ class ScheduleBuilder:
         self.schedule[date][post] = worker_id
         self.scheduler._update_tracking_data(worker_id, date, post) # Corrected: self.scheduler._update_tracking_data
         return True
+    
+    def _should_prioritize_worker_for_tolerance(self, worker_id: str, is_weekend_shift: bool = False) -> int:
+        """
+        Determina la prioridad de un trabajador basada en su desviación del target_shifts
+        
+        Args:
+            worker_id: ID del trabajador
+            is_weekend_shift: Si es un shift de weekend
+            
+        Returns:
+            int: Prioridad (mayor = más prioritario). 0 si no necesita priorización
+        """
+        try:
+            validation = self.scheduler.tolerance_validator.validate_worker_shift_count(
+                worker_id, is_weekend_only=is_weekend_shift
+            )
+            
+            if not validation or validation.get('error'):
+                return 0
+                
+            target = validation['target_shifts']
+            assigned = validation['assigned_shifts']
+            min_allowed = validation['min_allowed']
+            max_allowed = validation['max_allowed']
+            
+            # Si está por debajo del mínimo, alta prioridad
+            if assigned < min_allowed:
+                deficit = min_allowed - assigned
+                return 100 + deficit * 10  # Más déficit = más prioridad
+            
+            # Si está dentro del rango pero cerca del mínimo, prioridad media
+            elif assigned <= target:
+                return 50 + (target - assigned) * 5
+            
+            # Si está por encima del target pero dentro del máximo, baja prioridad
+            elif assigned < max_allowed:
+                return 20 - (assigned - target) * 2
+            
+            # Si está por encima del máximo, no asignar (prioridad negativa)
+            else:
+                return -100
+                
+        except Exception as e:
+            logging.error(f"Error calculating worker priority for {worker_id}: {e}")
+            return 0
+    
+    def _get_workers_prioritized_for_shift(self, date, post, is_weekend_shift: bool = False) -> List[str]:
+        """
+        Obtiene una lista de trabajadores priorizados para un shift específico
+        
+        Args:
+            date: Fecha del shift
+            post: Puesto del shift
+            is_weekend_shift: Si es un shift de weekend
+            
+        Returns:
+            List[str]: Lista de worker_ids ordenados por prioridad
+        """
+        eligible_workers = []
+        
+        for worker in self.workers_data:
+            worker_id = worker['id']
+            
+            # Verificar si el trabajador puede ser asignado
+            if self._can_assign_worker(worker_id, date, post):
+                priority = self._should_prioritize_worker_for_tolerance(worker_id, is_weekend_shift)
+                
+                # Solo incluir trabajadores con prioridad positiva o cero
+                if priority >= 0:
+                    eligible_workers.append((worker_id, priority))
+        
+        # Ordenar por prioridad (mayor prioridad primero)
+        eligible_workers.sort(key=lambda x: x[1], reverse=True)
+        
+        return [worker_id for worker_id, _ in eligible_workers]
         
     # ========================================
     # 7. SCHEDULE IMPROVEMENT METHODS
@@ -1355,23 +1430,28 @@ class ScheduleBuilder:
                 pass1_candidates = []
                 logging.debug(f"  [Pass 1 Attempt] Date: {date_val.strftime('%Y-%m-%d')}, Post: {post_val}, Relaxation Level: {relax_lvl_attempt}")
 
-                for worker_data_val in self.workers_data:
-                    worker_id_val = worker_data_val['id']
+                # Use tolerance-based prioritization for worker selection
+                is_weekend_shift = self._is_weekend_or_holiday_cached(date_val)
+                prioritized_workers = self._get_workers_prioritized_for_shift(date_val, post_val, is_weekend_shift)
+                
+                for worker_id_val in prioritized_workers:
+                    worker_data_val = next((w for w in self.workers_data if w['id'] == worker_id_val), None)
+                    if not worker_data_val:
+                        continue
+                        
                     logging.debug(f"    [Pass 1 Candidate Check] Worker: {worker_id_val} for Date: {date_val.strftime('%Y-%m-%d')}, Post: {post_val}, Relax: {relax_lvl_attempt}")
                     
                     score = self._calculate_worker_score(worker_data_val, date_val, post_val, relaxation_level=relax_lvl_attempt)
 
                     if score > float('-inf'):
-                        # Add target_shifts priority bonus to base score
-                        current_assignments = len(self.worker_assignments.get(worker_id_val, set()))
-                        target_shifts = worker_data_val.get('target_shifts', 0)
-                        target_deficit = max(0, target_shifts - current_assignments)
+                        # Get tolerance-based priority 
+                        tolerance_priority = self._should_prioritize_worker_for_tolerance(worker_id_val, is_weekend_shift)
                         
-                        # Combine base score with target_shifts priority
-                        priority_score = score + (target_deficit * 1000)  # Slightly lower bonus than swaps
+                        # Combine base score with tolerance priority
+                        priority_score = score + (tolerance_priority * 10)  # Weight tolerance priority
                         
                         logging.debug(f"      -> Pass1 ACCEPTED as candidate: Worker {worker_id_val} with base_score={score}, "
-                                    f"target_deficit={target_deficit}, priority_score={priority_score} at relax {relax_lvl_attempt}")
+                                    f"tolerance_priority={tolerance_priority}, priority_score={priority_score} at relax {relax_lvl_attempt}")
                         pass1_candidates.append((worker_data_val, priority_score))
                     else:
                         logging.debug(f"      -> Pass1 REJECTED (Score Check): Worker {worker_id_val} at relax {relax_lvl_attempt}")

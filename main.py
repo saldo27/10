@@ -3142,6 +3142,15 @@ class CalendarViewScreen(Screen):
                 
         except Exception as e:
             logging.error(f"Auto export failed: {e}")
+            
+            # Check if it's a permission error and provide helpful message
+            if "Permission denied" in str(e):
+                logging.warning("PDF export failed due to file permissions. This might be because:")
+                logging.warning("1. The file is already open in another program (PDF viewer)")
+                logging.warning("2. Insufficient write permissions in the directory")
+                logging.warning("3. The file is being used by another process")
+                logging.warning("Try closing any PDF viewers and running again.")
+            
             raise e
 
     def _generate_stats_for_export(self, scheduler, config):

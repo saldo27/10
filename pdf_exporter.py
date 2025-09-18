@@ -12,6 +12,9 @@ from utilities import numeric_sort_key
 from performance_cache import cached, time_function, monitor_performance
 from collections import defaultdict
 import logging
+import os
+import tempfile
+import shutil
 
 def numeric_sort_key(item):
     """
@@ -39,6 +42,80 @@ class PDFExporter:
         # Performance optimization: Pre-compute frequently used data
         self.holidays_set = set(self.holidays)  # O(1) lookup
         self.workers_dict = {worker.get('id'): worker for worker in self.workers_data}  # O(1) lookup
+
+    def _get_safe_filename(self, base_filename):
+        """
+        Generate a safe filename that can be written to, handling permission issues
+        """
+        # Try the original filename first
+        if self._can_write_file(base_filename):
+            return base_filename
+        
+        # If original fails, try with a timestamp suffix
+        base_name, ext = os.path.splitext(base_filename)
+        timestamp = datetime.now().strftime("%H%M%S")
+        alt_filename = f"{base_name}_{timestamp}{ext}"
+        
+        if self._can_write_file(alt_filename):
+            return alt_filename
+            
+        # As last resort, use temp directory
+        temp_dir = tempfile.gettempdir()
+        temp_filename = os.path.join(temp_dir, base_filename)
+        return temp_filename
+    
+    def _can_write_file(self, filename):
+        """
+        Check if we can write to the specified file
+        """
+        try:
+            # Try to open the file for writing
+            with open(filename, 'wb') as f:
+                pass
+            # If successful, remove the empty file
+            os.remove(filename)
+            return True
+        except (PermissionError, OSError):
+            return False
+
+    def _safe_file_write(self, doc, story, original_filename):
+        """
+        Safely write the PDF file, handling permission errors
+        """
+        safe_filename = self._get_safe_filename(original_filename)
+        
+        try:
+            # Create a temporary file first
+            temp_dir = tempfile.gettempdir()
+            temp_filename = os.path.join(temp_dir, f"temp_pdf_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+            
+            # Create the temporary document
+            temp_doc = SimpleDocTemplate(
+                temp_filename, pagesize=A4,
+                rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm
+            )
+            
+            # Build to temporary file
+            temp_doc.build(story)
+            
+            # Try to move to final location
+            try:
+                shutil.move(temp_filename, safe_filename)
+                logging.info(f"Successfully created PDF: {safe_filename}")
+                return safe_filename
+            except (PermissionError, OSError) as e:
+                # If move fails, just keep it in temp directory
+                logging.warning(f"Could not move PDF to {safe_filename}, keeping in temp: {temp_filename}")
+                return temp_filename
+                
+        except Exception as e:
+            # Clean up temp file if it exists
+            if 'temp_filename' in locals() and os.path.exists(temp_filename):
+                try:
+                    os.remove(temp_filename)
+                except:
+                    pass
+            raise e
 
     @time_function
     @monitor_performance("export_summary_pdf")
@@ -166,10 +243,10 @@ class PDFExporter:
 
                     story.append(Spacer(1, 0.5*cm)) # Space between workers
 
-            # --- Build PDF ---
-            doc.build(story)
-            logging.info(f"Successfully created GLOBAL summary PDF: {filename}")
-            return filename # Return filename on success
+            # --- Build PDF using safe method ---
+            final_filename = self._safe_file_write(doc, story, filename)
+            logging.info(f"Successfully created GLOBAL summary PDF: {final_filename}")
+            return final_filename # Return actual filename on success
 
         except Exception as e:
             logging.error(f"Failed to export GLOBAL summary PDF: {str(e)}", exc_info=True)
@@ -250,8 +327,8 @@ class PDFExporter:
         table.setStyle(style)
         
         story.append(table)
-        doc.build(story)
-        return filename
+        final_filename = self._safe_file_write(doc, story, filename)
+        return final_filename
 
     @time_function
     @monitor_performance("export_worker_statistics")
@@ -357,5 +434,5 @@ class PDFExporter:
             story.append(details_text)
             story.append(Spacer(1, 20))
         
-        doc.build(story)
-        return filename
+        final_filename = self._safe_file_write(doc, story, filename)
+        return final_filename
