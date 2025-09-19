@@ -42,7 +42,7 @@ class PasswordScreen(Screen):
         super(PasswordScreen, self).__init__(**kwargs)
         layout = BoxLayout(orientation='vertical', padding=50, spacing=20)
 
-        layout.add_widget(Label(text='Introduza la contraseña:', size_hint_y=None, height=40))
+        layout.add_widget(Label(text='Introduzca la contraseña:', size_hint_y=None, height=40))
 
         self.password_input = TextInput(
             multiline=False,
@@ -965,7 +965,7 @@ class SetupScreen(Screen):
         
         # Title with some vertical space
         title_layout = BoxLayout(size_hint_y=0.1, padding=(0, 10))
-        title = Label(text="Schedule Setup", font_size=24, bold=True)
+        title = Label(text="Datos Generales", font_size=24, bold=True)
         title_layout.add_widget(title)
         self.layout.add_widget(title_layout)
         
@@ -1087,7 +1087,7 @@ class SetupScreen(Screen):
         
         # Add some explanation text
         help_text = Label(
-            text="Tip: Introduce Festivos separados por comas. Ej: 25-12-2025, 01-06-2026",
+            text="Tip: Introduce Festivos (separados por comas)",
             halign='left',
             valign='top',
             size_hint_y=None,
@@ -1476,7 +1476,7 @@ class WorkerDetailsScreen(Screen):
         self.layout = BoxLayout(orientation='vertical', padding=20, spacing=10)
 
         # Title
-        self.title_label = Label(text='Worker Details', size_hint_y=0.1)
+        self.title_label = Label(text='Datos de cada médico', size_hint_y=0.1)
         self.layout.add_widget(self.title_label)
 
         # Form layout
@@ -1534,6 +1534,14 @@ class WorkerDetailsScreen(Screen):
             width=40,
             active=False
         )
+        
+        # Override the checkbox appearance to make it white
+        with self.incompatible_checkbox.canvas.before:
+            Color(1, 1, 1, 1)  # White background
+            self.checkbox_bg = Rectangle(pos=self.incompatible_checkbox.pos, size=self.incompatible_checkbox.size)
+        
+        # Bind to update the background position when checkbox moves
+        self.incompatible_checkbox.bind(pos=self._update_checkbox_bg, size=self._update_checkbox_bg)
         
         checkbox_text = Label(
             text='No puede coincidir con otro incompatible',
@@ -1593,6 +1601,12 @@ class WorkerDetailsScreen(Screen):
             return True
         except ValueError:
             return False
+        
+    def _update_checkbox_bg(self, instance, value):
+        """Update the checkbox background position when it moves"""
+        if hasattr(self, 'checkbox_bg'):
+            self.checkbox_bg.pos = instance.pos
+            self.checkbox_bg.size = instance.size
         
     def validate_worker_data(self):
         """Validate all worker data fields"""
@@ -1726,11 +1740,11 @@ class WorkerDetailsScreen(Screen):
                 self.incompatible_checkbox.active = next_worker.get('is_incompatible', False)
         
             # Update title and buttons
-            self.title_label.text = f'Worker Details ({current_index + 2}/{total_workers})'
+            self.title_label.text = f'Datos de cada médico({current_index + 2}/{total_workers})'
             self.prev_btn.disabled = False
         
             if current_index + 1 == total_workers - 1:
-                self.next_btn.text = 'Finish'
+                self.next_btn.text = 'Finalizar'
         else:
             # We're at the last worker, generate schedule
             self.generate_schedule()
@@ -1755,13 +1769,13 @@ class WorkerDetailsScreen(Screen):
             self.incompatible_checkbox.active = worker.get('is_incompatible', False)
             
         # Update title
-        self.title_label.text = f'Worker Details ({current_index + 1}/{app.schedule_config.get("num_workers", 0)})'
+        self.title_label.text = f'Datos de cada médico ({current_index + 1}/{app.schedule_config.get("num_workers", 0)})'
         
         # Update button text based on position
         if current_index == app.schedule_config.get('num_workers', 0) - 1:
-            self.next_btn.text = 'Finish'
+            self.next_btn.text = 'Finalizar'
         else:
-            self.next_btn.text = 'Next'
+            self.next_btn.text = 'Siguiente'
             
         # Disable Previous button if on first worker
         self.prev_btn.disabled = (current_index == 0)
@@ -2888,11 +2902,13 @@ class CalendarViewScreen(Screen):
         # Add the scroll view to the main content
         content.add_widget(scroll)
     
-        # --- Buttons (Export PDF, Close) ---
+        # --- Buttons (Export PDF, Export Calendar, Close) ---
         button_layout = BoxLayout(orientation='horizontal', size_hint_y=0.1, spacing=10)
-        pdf_button = Button(text='Export PDF')
+        pdf_button = Button(text='Export Summary PDF')
+        calendar_button = Button(text='Export Full Calendar')
         close_button = Button(text='Close')
         button_layout.add_widget(pdf_button)
+        button_layout.add_widget(calendar_button)
         button_layout.add_widget(close_button)
         content.add_widget(button_layout)
     
@@ -2929,8 +2945,35 @@ class CalendarViewScreen(Screen):
             print("DEBUG: on_close callback triggered!")
             popup.dismiss()
             print("DEBUG: Popup dismissed from on_close")
+            
+        def on_calendar(instance):
+            print("DEBUG: on_calendar callback triggered!")
+            try:
+                print("DEBUG: Generating full calendar PDF...")
+                app = App.get_running_app()
+                exporter = PDFExporter(app.schedule_config)
+                
+                calendar_filename = exporter.export_full_calendar_pdf()
+                
+                if calendar_filename:
+                    popup_msg = Popup(title='Success', 
+                                     content=Label(text=f'Full calendar exported to {calendar_filename}'),
+                                     size_hint=(None, None), size=(500, 200))
+                    popup_msg.open()
+                else:
+                    popup_msg = Popup(title='Error', 
+                                     content=Label(text='Calendar export failed.'),
+                                     size_hint=(None, None), size=(400, 200))
+                    popup_msg.open()
+            except Exception as e:
+                print(f"DEBUG: on_calendar - ERROR: {e}")
+                popup_msg = Popup(title='Error', 
+                                 content=Label(text=f'Calendar export failed: {str(e)}'),
+                                 size_hint=(None, None), size=(400, 200))
+                popup_msg.open()
     
         pdf_button.bind(on_press=on_pdf)
+        calendar_button.bind(on_press=on_calendar)
         close_button.bind(on_press=on_close)
     
         # Show the popup
@@ -2973,7 +3016,7 @@ class CalendarViewScreen(Screen):
 
     def export_summary_pdf(self, stats_data): # Renamed param
         print("DEBUG: export_summary_pdf (main.py) called!")
-        logging.info("Attempting to export GLOBAL summary PDF...") # Changed log message
+        logging.info("Attempting to export GLOBAL summary PDF and full calendar...") # Changed log message
         try:
             app = App.get_running_app()
             print("DEBUG: export_summary_pdf - Creating PDFExporter...")
@@ -2984,19 +3027,35 @@ class CalendarViewScreen(Screen):
             # The pdf_exporter method expects year, month, stats OR just stats?
             # Let's modify pdf_exporter.py to just take stats for the summary.
             filename = exporter.export_summary_pdf(stats_data) # Pass the whole stats dictionary
+            
+            # NEW: Also generate the full calendar PDF automatically
+            print("DEBUG: export_summary_pdf - Generating full calendar PDF...")
+            calendar_filename = exporter.export_full_calendar_pdf()
             # --- END CORRECTION ---
 
+            success_messages = []
             if filename: # Check if export was successful (returned filename)
-                print(f"DEBUG: export_summary_pdf - Export successful: {filename}")
-                popup = Popup(title='Success', content=Label(text=f'Summary exported to {filename}'),
-                             size_hint=(None, None), size=(400, 200))
+                print(f"DEBUG: export_summary_pdf - Summary export successful: {filename}")
+                success_messages.append(f'Summary exported to {filename}')
+            else:
+                print(f"DEBUG: export_summary_pdf - Summary export failed (no filename returned).")
+                
+            if calendar_filename:
+                print(f"DEBUG: export_summary_pdf - Calendar export successful: {calendar_filename}")
+                success_messages.append(f'Full calendar exported to {calendar_filename}')
+            else:
+                print(f"DEBUG: export_summary_pdf - Calendar export failed.")
+                
+            if success_messages:
+                popup = Popup(title='PDF Export Success', 
+                             content=Label(text='\n'.join(success_messages)),
+                             size_hint=(None, None), size=(500, 250))
                 popup.open()
             else:
-                 print(f"DEBUG: export_summary_pdf - Export failed (no filename returned).")
-                 # Error should have been raised by exporter, but just in case
-                 popup = Popup(title='Error', content=Label(text='PDF export failed internally.'),
-                              size_hint=(None, None), size=(400, 200))
-                 popup.open()
+                # Error should have been raised by exporter, but just in case
+                popup = Popup(title='Error', content=Label(text='PDF export failed internally.'),
+                             size_hint=(None, None), size=(400, 200))
+                popup.open()
             pass # Placeholder
 
         except AttributeError as ae:

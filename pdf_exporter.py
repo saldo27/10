@@ -436,3 +436,204 @@ class PDFExporter:
         
         final_filename = self._safe_file_write(doc, story, filename)
         return final_filename
+
+    def export_full_calendar_pdf(self, filename=None):
+        """
+        Export complete calendar with all months showing all assignments
+        This generates a comprehensive PDF with the full schedule period
+        """
+        if not filename:
+            filename = "full_calendar_schedule.pdf"
+            
+        safe_filename = self._get_safe_filename(filename)
+        
+        try:
+            # Use landscape orientation for better month display
+            doc = SimpleDocTemplate(
+                safe_filename,
+                pagesize=landscape(A4),
+                rightMargin=30,
+                leftMargin=30,
+                topMargin=30,
+                bottomMargin=30
+            )
+            
+            story = []
+            
+            # Add main title
+            main_title_style = ParagraphStyle(
+                'MainTitle',
+                parent=self.styles['Heading1'],
+                fontSize=18,
+                spaceAfter=20,
+                alignment=1  # Center alignment
+            )
+            
+            # Determine the date range from schedule
+            if not self.schedule:
+                logging.warning("No schedule data available for full calendar export")
+                return None
+                
+            schedule_dates = []
+            for date_key in self.schedule.keys():
+                if isinstance(date_key, str):
+                    try:
+                        schedule_dates.append(datetime.strptime(date_key, '%Y-%m-%d'))
+                    except ValueError:
+                        continue
+                elif isinstance(date_key, datetime):
+                    schedule_dates.append(date_key)
+                    
+            if not schedule_dates:
+                logging.warning("No valid dates found in schedule")
+                return None
+                
+            start_date = min(schedule_dates)
+            end_date = max(schedule_dates)
+            
+            title = Paragraph(
+                f"Complete Schedule Calendar ({start_date.strftime('%B %Y')} - {end_date.strftime('%B %Y')})",
+                main_title_style
+            )
+            story.append(title)
+            story.append(Spacer(1, 20))
+            
+            # Generate calendar for each month in the range
+            current_date = datetime(start_date.year, start_date.month, 1)
+            end_month = datetime(end_date.year, end_date.month, 1)
+            
+            while current_date <= end_month:
+                # Add month title
+                month_title_style = ParagraphStyle(
+                    'MonthTitle',
+                    parent=self.styles['Heading2'],
+                    fontSize=14,
+                    spaceAfter=10,
+                    alignment=1
+                )
+                
+                month_title = Paragraph(
+                    current_date.strftime('%B %Y'),
+                    month_title_style
+                )
+                story.append(month_title)
+                
+                # Generate calendar for this month
+                calendar_table = self._generate_month_calendar_table(
+                    current_date.year, 
+                    current_date.month
+                )
+                story.append(calendar_table)
+                story.append(Spacer(1, 30))
+                
+                # Move to next month
+                if current_date.month == 12:
+                    current_date = datetime(current_date.year + 1, 1, 1)
+                else:
+                    current_date = datetime(current_date.year, current_date.month + 1, 1)
+            
+            # Build the PDF
+            doc.build(story)
+            
+            final_filename = os.path.abspath(safe_filename)
+            logging.info(f"Successfully created full calendar PDF: {final_filename}")
+            return final_filename
+            
+        except Exception as e:
+            logging.error(f"Error creating full calendar PDF: {e}")
+            return None
+
+    def _generate_month_calendar_table(self, year, month):
+        """Generate a calendar table for a specific month with assignments"""
+        from calendar import monthcalendar
+        
+        cal = monthcalendar(year, month)
+        calendar_data = [['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']]
+        
+        for week in cal:
+            week_data = []
+            for day in week:
+                if day == 0:
+                    cell_content = ''
+                else:
+                    date = datetime(year, month, day)
+                    
+                    # Start with day number
+                    cell_parts = [f'<b>{day}</b>']
+                    
+                    # Add scheduled workers for this date
+                    date_key = date.strftime('%Y-%m-%d')
+                    assignments_found = False
+                    
+                    # Check both string and datetime keys in schedule
+                    for schedule_key, day_schedule in self.schedule.items():
+                        schedule_date = None
+                        
+                        if isinstance(schedule_key, str):
+                            try:
+                                schedule_date = datetime.strptime(schedule_key, '%Y-%m-%d')
+                            except ValueError:
+                                continue
+                        elif isinstance(schedule_key, datetime):
+                            schedule_date = schedule_key
+                            
+                        if schedule_date and schedule_date.date() == date.date():
+                            assignments_found = True
+                            
+                            # Handle different schedule formats
+                            if isinstance(day_schedule, list):
+                                # List format: [worker1, worker2, ...]
+                                for i, worker_id in enumerate(day_schedule):
+                                    if worker_id is not None:
+                                        cell_parts.append(f'P{i+1}: {worker_id}')
+                            elif isinstance(day_schedule, dict):
+                                # Dict format: {'Morning': [workers], 'Afternoon': [workers], ...}
+                                for shift_name, workers in day_schedule.items():
+                                    if isinstance(workers, list):
+                                        for worker_id in workers:
+                                            if worker_id:
+                                                cell_parts.append(f'{shift_name[:3]}: {worker_id}')
+                                    elif workers:  # Single worker
+                                        cell_parts.append(f'{shift_name[:3]}: {workers}')
+                            break
+                    
+                    # Mark holidays
+                    if date in self.holidays_set:
+                        cell_parts.append('<i>Holiday</i>')
+                    
+                    # Mark weekends
+                    if date.weekday() >= 5:  # Saturday=5, Sunday=6
+                        cell_parts[0] = f'<b><i>{day}</i></b>'  # Make weekend days italic
+                    
+                    cell_content = Paragraph('<br/>'.join(cell_parts), self.styles['SmallNormal'])
+                
+                week_data.append(cell_content)
+            calendar_data.append(week_data)
+        
+        # Create table with appropriate styling
+        table = Table(
+            calendar_data, 
+            colWidths=[1.3*inch]*7, 
+            rowHeights=[0.4*inch] + [1.0*inch]*len(cal)
+        )
+        
+        table.setStyle(TableStyle([
+            # Header row styling
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            
+            # Body styling
+            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('BOX', (0, 0), (-1, -1), 2, colors.black),
+            
+            # Weekend columns (Saturday=5, Sunday=6)
+            ('BACKGROUND', (5, 1), (6, -1), colors.lightgrey),
+        ]))
+        
+        return table
