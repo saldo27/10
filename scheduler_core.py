@@ -44,7 +44,7 @@ class SchedulerCore:
         
         # Initialize tolerance validation and iterative optimization
         self.tolerance_validator = ShiftToleranceValidator(scheduler)
-        self.iterative_optimizer = IterativeOptimizer(max_iterations=20, tolerance=0.08)  # Increased iterations and tolerance
+        self.iterative_optimizer = IterativeOptimizer(max_iterations=30, tolerance=0.08)  # Increased to 30 for persistent violations
         
         logging.info("SchedulerCore initialized with enhanced optimization systems and tolerance validation")
     

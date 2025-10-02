@@ -41,7 +41,7 @@ class IterativeOptimizer:
         """
         self.max_iterations = max_iterations
         self.tolerance = tolerance
-        self.convergence_threshold = 5  # Stop after 5 iterations without improvement (increased from 3)
+        self.convergence_threshold = 3  # Stop after 3 iterations without improvement (reduced for weekend-only aggression)
         self.stagnation_counter = 0
         self.best_result = None
         self.optimization_history = []
@@ -269,6 +269,18 @@ class IterativeOptimizer:
             optimized_schedule = self._apply_weekend_swaps(
                 optimized_schedule, validation_report, workers_data, schedule_config
             )
+            
+            # Strategy 1C: Third aggressive pass for persistent violations (NEW)
+            if len(weekend_violations) >= 4 and self.stagnation_counter >= 2:
+                logging.info(f"   🔥 AGGRESSIVE MODE: {len(weekend_violations)} persistent violations, stagnation: {self.stagnation_counter}")
+                # Try swaps again with relaxed constraints
+                optimized_schedule = self._apply_weekend_swaps(
+                    optimized_schedule, validation_report, workers_data, schedule_config
+                )
+                # Try redistribution one more time
+                optimized_schedule = self._redistribute_weekend_shifts(
+                    optimized_schedule, weekend_violations, workers_data, schedule_config
+                )
         else:
             # NORMAL MODE: Standard redistribution
             # Strategy 1: Redistribute weekend shifts FIRST (more specific constraints)
@@ -282,6 +294,14 @@ class IterativeOptimizer:
                 optimized_schedule = self._redistribute_general_shifts(
                     optimized_schedule, general_violations, workers_data, schedule_config
                 )
+        
+        # Strategy 2.5: Fill empty slots using greedy algorithm (NEW)
+        empty_slots_count = self._count_empty_slots(optimized_schedule)
+        if empty_slots_count > 0:
+            logging.info(f"   🕳️ Found {empty_slots_count} empty slots - applying greedy fill")
+            optimized_schedule = self._greedy_fill_empty_slots(
+                optimized_schedule, workers_data, schedule_config, scheduler_core
+            )
         
         # Strategy 3: Apply random perturbations based on intensity - more aggressive for persistent violations
         total_violations = len(general_violations) + len(weekend_violations)
@@ -1239,13 +1259,13 @@ class IterativeOptimizer:
         """
         # Stop if stagnation threshold reached BUT NOT if there are significant violations
         if self.stagnation_counter >= self.convergence_threshold:
-            if current_violations > 5:  # Lowered from 8 to be more aggressive
+            if current_violations > 3:  # Lowered from 5 to be more aggressive
                 # Too many violations - keep going despite stagnation
-                logging.info(f"   ⚠️ Plateau detected but continuing due to high violations ({current_violations})")
+                logging.info(f"   ⚠️ Plateau detected but continuing due to violations ({current_violations})")
                 return False
-            elif current_violations > 2 and self.weekend_only_mode:  # Lowered from 5 to 2
-                # Weekend-only mode with significant violations - keep going
-                logging.info(f"   ⚠️ Plateau in weekend-only mode but continuing ({current_violations} violations)")
+            elif current_violations > 0 and self.weekend_only_mode:  # Continue if ANY violations in weekend mode
+                # Weekend-only mode with violations - keep going
+                logging.info(f"   ⚠️ Plateau in weekend-only mode but continuing ({current_violations} violations remaining)")
                 return False
             else:
                 logging.info(f"   🛑 Stopping due to stagnation ({self.stagnation_counter} iterations without improvement)")
@@ -1371,4 +1391,218 @@ class IterativeOptimizer:
                 'general_shift_violations': [],
                 'weekend_shift_violations': [],
                 'total_violations': 0
+            }    
+    def _count_empty_slots(self, schedule: Dict) -> int:
+        """Count the number of empty slots in the schedule."""
+        empty_count = 0
+        try:
+            for date, assignments in schedule.items():
+                if isinstance(assignments, list):
+                    empty_count += sum(1 for worker in assignments if worker is None)
+                elif isinstance(assignments, dict):
+                    for shift_workers in assignments.values():
+                        if isinstance(shift_workers, list):
+                            empty_count += sum(1 for worker in shift_workers if worker is None)
+        except Exception as e:
+            logging.error(f"Error counting empty slots: {e}")
+        return empty_count
+    
+    def _greedy_fill_empty_slots(self, schedule: Dict, workers_data: List[Dict],
+                                 schedule_config: Dict, scheduler_core) -> Dict:
+        """
+        Fill empty slots using a greedy algorithm.
+        Prioritizes workers with fewer shifts and better availability.
+        
+        Algorithm:
+        1. Find all empty slots
+        2. For each empty slot:
+           - Rank workers by: (a) deviation from target, (b) constraints satisfaction
+           - Assign best available worker
+        3. Stop when no more slots can be filled
+        """
+        logging.info(f"   🎯 GREEDY FILL: Starting empty slot filling")
+        
+        optimized_schedule = copy.deepcopy(schedule)
+        filled_count = 0
+        
+        try:
+            # 1. Find all empty slots
+            empty_slots = []
+            for date, assignments in optimized_schedule.items():
+                if isinstance(assignments, list):
+                    for post_idx, worker in enumerate(assignments):
+                        if worker is None:
+                            empty_slots.append({
+                                'date': date,
+                                'post': post_idx,
+                                'format': 'list'
+                            })
+                elif isinstance(assignments, dict):
+                    for shift_type, shift_workers in assignments.items():
+                        if isinstance(shift_workers, list):
+                            for idx, worker in enumerate(shift_workers):
+                                if worker is None:
+                                    empty_slots.append({
+                                        'date': date,
+                                        'shift_type': shift_type,
+                                        'idx': idx,
+                                        'format': 'dict'
+                                    })
+            
+            if not empty_slots:
+                logging.info(f"   ✅ No empty slots found")
+                return optimized_schedule
+            
+            logging.info(f"   📊 Found {len(empty_slots)} empty slots to fill")
+            
+            # 2. For each empty slot, find best worker using greedy heuristic
+            for slot in empty_slots:
+                date = slot['date']
+                
+                # Get worker statistics for greedy selection
+                worker_stats = self._calculate_worker_stats(optimized_schedule, workers_data)
+                
+                # Rank workers by priority (fewer shifts = higher priority)
+                candidates = []
+                
+                for worker in workers_data:
+                    worker_id = worker.get('id')
+                    worker_name = f"Worker {worker_id}" if isinstance(worker_id, (int, str)) and str(worker_id).isdigit() else str(worker_id)
+                    
+                    # Check if worker can take this shift
+                    if self._can_worker_take_greedy_shift(
+                        worker_name, worker_id, date, slot, optimized_schedule, 
+                        workers_data, scheduler_core
+                    ):
+                        stats = worker_stats.get(worker_name, {})
+                        assigned = stats.get('total_shifts', 0)
+                        target = worker.get('target_shifts', 0)
+                        
+                        # Greedy score: prioritize workers below target
+                        deviation = assigned - target if target > 0 else assigned
+                        priority = -deviation  # Negative deviation = higher priority
+                        
+                        candidates.append({
+                            'worker_name': worker_name,
+                            'worker_id': worker_id,
+                            'priority': priority,
+                            'deviation': deviation,
+                            'assigned': assigned
+                        })
+                
+                if not candidates:
+                    continue
+                
+                # Sort by priority (highest first)
+                candidates.sort(key=lambda x: x['priority'], reverse=True)
+                best_worker = candidates[0]
+                
+                # Assign the slot
+                if slot['format'] == 'list':
+                    optimized_schedule[date][slot['post']] = best_worker['worker_name']
+                elif slot['format'] == 'dict':
+                    optimized_schedule[date][slot['shift_type']][slot['idx']] = best_worker['worker_name']
+                
+                filled_count += 1
+                
+                if filled_count <= 5:  # Log first 5 assignments
+                    date_str = date.strftime('%Y-%m-%d') if hasattr(date, 'strftime') else str(date)
+                    logging.info(f"      ✅ Filled slot on {date_str}: {best_worker['worker_name']} "
+                               f"(deviation: {best_worker['deviation']:+d}, assigned: {best_worker['assigned']})")
+            
+            logging.info(f"   ✅ GREEDY FILL: Filled {filled_count}/{len(empty_slots)} empty slots")
+            
+        except Exception as e:
+            logging.error(f"Error in greedy fill: {e}", exc_info=True)
+        
+        return optimized_schedule
+    
+    def _calculate_worker_stats(self, schedule: Dict, workers_data: List[Dict]) -> Dict:
+        """Calculate current shift counts for all workers."""
+        stats = {}
+        
+        for worker in workers_data:
+            worker_id = worker.get('id')
+            worker_name = f"Worker {worker_id}" if isinstance(worker_id, (int, str)) and str(worker_id).isdigit() else str(worker_id)
+            stats[worker_name] = {
+                'total_shifts': 0,
+                'weekend_shifts': 0
             }
+        
+        # Count assignments
+        for date, assignments in schedule.items():
+            is_weekend = False
+            try:
+                if hasattr(date, 'weekday'):
+                    is_weekend = date.weekday() in [5, 6]
+                elif isinstance(date, str):
+                    from datetime import datetime
+                    date_obj = datetime.strptime(date, '%Y-%m-%d')
+                    is_weekend = date_obj.weekday() in [5, 6]
+            except:
+                pass
+            
+            if isinstance(assignments, list):
+                for worker in assignments:
+                    if worker and worker in stats:
+                        stats[worker]['total_shifts'] += 1
+                        if is_weekend:
+                            stats[worker]['weekend_shifts'] += 1
+            elif isinstance(assignments, dict):
+                for shift_workers in assignments.values():
+                    if isinstance(shift_workers, list):
+                        for worker in shift_workers:
+                            if worker and worker in stats:
+                                stats[worker]['total_shifts'] += 1
+                                if is_weekend:
+                                    stats[worker]['weekend_shifts'] += 1
+        
+        return stats
+    
+    def _can_worker_take_greedy_shift(self, worker_name: str, worker_id, date,
+                                      slot: Dict, schedule: Dict, workers_data: List[Dict],
+                                      scheduler_core) -> bool:
+        """
+        Check if worker can take a shift with basic constraint checking.
+        Simplified version for greedy algorithm (less strict than full validation).
+        """
+        try:
+            # Check if worker already has a shift on this date
+            if isinstance(schedule.get(date), list):
+                if worker_name in schedule[date]:
+                    return False
+            elif isinstance(schedule.get(date), dict):
+                for shift_workers in schedule[date].values():
+                    if isinstance(shift_workers, list) and worker_name in shift_workers:
+                        return False
+            
+            # Check basic gap constraint (simplified - just check adjacent days)
+            if hasattr(scheduler_core, 'scheduler') and hasattr(scheduler_core.scheduler, 'gap_between_shifts'):
+                gap = scheduler_core.scheduler.gap_between_shifts
+                
+                # Get worker's assignments
+                worker_dates = []
+                for d, assigns in schedule.items():
+                    if isinstance(assigns, list) and worker_name in assigns:
+                        worker_dates.append(d)
+                    elif isinstance(assigns, dict):
+                        for shift_workers in assigns.values():
+                            if isinstance(shift_workers, list) and worker_name in shift_workers:
+                                worker_dates.append(d)
+                                break
+                
+                # Check gap with nearest assignments
+                for worker_date in worker_dates:
+                    try:
+                        if hasattr(date, 'date') and hasattr(worker_date, 'date'):
+                            days_diff = abs((date - worker_date).days)
+                            if days_diff < gap and days_diff > 0:
+                                return False
+                    except:
+                        pass
+            
+            return True
+            
+        except Exception as e:
+            logging.debug(f"Error checking worker {worker_name} for greedy shift: {e}")
+            return False
