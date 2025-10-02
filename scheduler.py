@@ -426,7 +426,7 @@ class Scheduler:
                         if worker_id not in self.worker_posts:
                             self.worker_posts[worker_id] = set()
                         elif not isinstance(self.worker_posts[worker_id], set):
-                            logging.warning(f"Fixing corrupted worker_posts[{worker_id}] - was {type(self.worker_posts[worker_id])}")
+                            logging.debug(f"Auto-correcting worker_posts[{worker_id}] type from {type(self.worker_posts[worker_id])} to set")
                             self.worker_posts[worker_id] = set()
                         self.worker_posts[worker_id].add(post_idx)
                     
@@ -640,7 +640,7 @@ class Scheduler:
             # Robust check and initialization for self.worker_posts[worker_id]
             # Ensures it's a set even if worker_id was already a key but with a wrong type (e.g., dict)
             if worker_id not in self.worker_posts or not isinstance(self.worker_posts.get(worker_id), set):
-                logging.warning(f"Re-initializing self.worker_posts[{worker_id}] as a set due to incorrect type.") # Optional: log this
+                logging.debug(f"Auto-correcting worker_posts[{worker_id}] to set (was {type(self.worker_posts.get(worker_id, None))})")
                 self.worker_posts[worker_id] = set() 
             
             if worker_id not in self.worker_weekdays: 

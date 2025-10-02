@@ -67,6 +67,10 @@ class ScheduleBuilder:
         self.priority_manager = DynamicPriorityManager(scheduler)
         self.current_weights = self.priority_manager.base_weights
         
+        # Initialize backtracking manager
+        from backtracking_manager import BacktrackingManager
+        self.backtracking_manager = BacktrackingManager(scheduler, max_checkpoints=20)
+        
         # Build performance caches
         self._build_optimization_caches()
 
@@ -1142,6 +1146,30 @@ class ScheduleBuilder:
         
         logging.debug(f"Dynamic priorities updated for {progress.phase} phase "
                      f"({progress.coverage_percentage:.1f}% coverage)")
+    
+    def create_checkpoint(self, phase: str, iteration: int, description: str = "", reason: str = "manual") -> str:
+        """
+        Create a checkpoint for potential backtracking.
+        
+        Args:
+            phase: Current phase ('mandatory', 'improvement', 'finalization')
+            iteration: Current iteration number
+            description: Human-readable description
+            reason: Why checkpoint is being created
+            
+        Returns:
+            checkpoint_id: Unique identifier for the checkpoint
+        """
+        return self.backtracking_manager.create_checkpoint(phase, iteration, description, reason)
+    
+    def attempt_recovery_if_stuck(self) -> bool:
+        """
+        Check if stuck in dead-end and attempt recovery.
+        
+        Returns:
+            bool: True if recovery was performed
+        """
+        return self.backtracking_manager.auto_recovery()
     
     def _assign_mandatory_guards(self):
         logging.info("Starting mandatory guard assignment…")

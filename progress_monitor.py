@@ -291,3 +291,30 @@ class ProgressMonitor:
             return True
         
         return False
+    
+    def record_recovery(self, iteration: int):
+        """
+        Register a backtracking recovery event.
+        
+        This method integrates with the backtracking system to track
+        when recoveries occur during optimization.
+        
+        Args:
+            iteration: Iteration number where recovery occurred
+        """
+        logging.info(f"📊 ProgressMonitor: Recovery recorded at iteration {iteration}")
+        
+        # Mark in iteration data
+        if self.iteration_data:
+            recovery_event = {
+                'iteration': iteration,
+                'event': 'backtracking_recovery',
+                'timestamp': datetime.now(),
+                'iterations_since_improvement': iteration - self.last_significant_improvement
+            }
+            self.iteration_data.append(recovery_event)
+        
+        # Reset stagnation counter since we're trying a new path
+        self.last_significant_improvement = iteration
+        
+        logging.info(f"   Stagnation counter reset - exploring alternative path")

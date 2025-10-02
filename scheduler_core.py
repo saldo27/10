@@ -139,6 +139,14 @@ class SchedulerCore:
             # Synchronize tracking data
             self.scheduler.schedule_builder._synchronize_tracking_data()
             
+            # Create checkpoint after mandatory assignment
+            self.scheduler.schedule_builder.create_checkpoint(
+                phase='mandatory',
+                iteration=0,
+                description="After mandatory assignment",
+                reason="phase_completion"
+            )
+            
             # Update dynamic priorities after mandatory assignment
             self.scheduler.schedule_builder.update_dynamic_priorities()
             
@@ -278,6 +286,41 @@ class SchedulerCore:
                     improvement_loop_count, operation_results, current_overall_score
                 )
                 
+                # Smart checkpoint creation (integrated with backtracking system)
+                backtracking_mgr = self.scheduler.schedule_builder.backtracking_manager
+                if backtracking_mgr.should_create_checkpoint(improvement_loop_count, 'improvement'):
+                    self.scheduler.schedule_builder.create_checkpoint(
+                        phase='improvement',
+                        iteration=improvement_loop_count,
+                        description=f"Iteration {improvement_loop_count} - Score: {current_overall_score:.2f}",
+                        reason="smart_checkpoint"
+                    )
+                
+                # Check for dead-end and attempt recovery (pass metrics to avoid recreation)
+                if improvement_loop_count > 20 and improvement_loop_count % 5 == 0:
+                    # Check for tolerance violations
+                    tolerance_violations_count = 0
+                    if hasattr(self, 'tolerance_validator'):
+                        try:
+                            outside_general = self.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=False)
+                            outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=True)
+                            tolerance_violations_count = len(outside_general) + len(outside_weekend)
+                        except Exception as e:
+                            logging.debug(f"Could not check tolerance violations: {e}")
+                    
+                    # Attempt recovery with tolerance violations info
+                    if backtracking_mgr.auto_recovery(metrics=self.metrics, tolerance_violations=tolerance_violations_count):
+                        logging.info("🔄 Recovery performed - retrying from better state")
+                        
+                        # Reset progress monitor after recovery
+                        if self.progress_monitor:
+                            self.progress_monitor.record_recovery(improvement_loop_count)
+                        
+                        # Continue from recovered state
+                        current_overall_score = self.metrics.calculate_overall_schedule_score()
+                        overall_improvement_made = True
+                        continue
+                
                 # Check if should continue with smart early stopping
                 should_continue, reason = self.metrics.should_continue_optimization(improvement_loop_count)
                 if not should_continue:
@@ -335,6 +378,14 @@ class SchedulerCore:
         logging.info("Phase 4: Finalizing schedule...")
         
         try:
+            # Create checkpoint before finalization
+            self.scheduler.schedule_builder.create_checkpoint(
+                phase='finalization',
+                iteration=0,
+                description="Before final optimization",
+                reason="pre_finalization"
+            )
+            
             # Update dynamic priorities one final time before finalization
             self.scheduler.schedule_builder.update_dynamic_priorities()
             
