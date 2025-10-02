@@ -419,7 +419,9 @@ class Scheduler:
                 
                 for post_idx, worker_id in enumerate(shifts):
                     if worker_id is not None:
-                        # Update worker assignments
+                        # Update worker assignments - initialize if needed
+                        if worker_id not in self.worker_assignments:
+                            self.worker_assignments[worker_id] = set()
                         self.worker_assignments[worker_id].add(date)
                     
                         # Update posts worked - with robust protection
@@ -430,15 +432,23 @@ class Scheduler:
                             self.worker_posts[worker_id] = set()
                         self.worker_posts[worker_id].add(post_idx)
                     
-                        # Update weekday counts
+                        # Update weekday counts - initialize if needed
+                        if worker_id not in self.worker_weekdays:
+                            self.worker_weekdays[worker_id] = {day: 0 for day in range(7)}
                         self.worker_weekdays[worker_id][weekday] += 1
                     
-                        # Update weekends/holidays efficiently
+                        # Update weekends/holidays efficiently - initialize if needed
                         if is_weekend_or_holiday:
+                            if worker_id not in self.worker_weekends:
+                                self.worker_weekends[worker_id] = []
+                            if worker_id not in self.worker_weekend_counts:
+                                self.worker_weekend_counts[worker_id] = 0
                             self.worker_weekends[worker_id].append(date)
                             self.worker_weekend_counts[worker_id] += 1
                     
-                        # Update shift counts
+                        # Update shift counts - initialize if needed
+                        if worker_id not in self.worker_shift_counts:
+                            self.worker_shift_counts[worker_id] = 0
                         self.worker_shift_counts[worker_id] += 1
         
             # Sort weekend dates for consistency (batch operation)

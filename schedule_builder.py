@@ -3641,6 +3641,9 @@ class ScheduleBuilder:
                     
                     # Calculate worker_weekend_counts
                     if is_weekend_or_holiday:
+                        # Initialize if not present (handles both int and str worker_ids)
+                        if worker_id not in worker_weekend_counts:
+                            worker_weekend_counts[worker_id] = 0
                         worker_weekend_counts[worker_id] += 1
 
         # Calculate last assignment dates

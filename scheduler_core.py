@@ -286,9 +286,57 @@ class SchedulerCore:
                     improvement_loop_count, operation_results, current_overall_score
                 )
                 
+                # PROACTIVE TOLERANCE VALIDATION (every 5 iterations, or every iteration after 50)
+                tolerance_violations_count = 0
+                previous_violations = getattr(self, '_last_tolerance_violations', 0)
+                
+                # Check more frequently: every 5 iterations, or every iteration if past 50
+                should_validate = (
+                    improvement_loop_count % 5 == 0 or 
+                    improvement_loop_count > 50 or
+                    not cycle_improvement_made  # Also check when no improvement
+                )
+                
+                if should_validate:
+                    if hasattr(self, 'tolerance_validator'):
+                        try:
+                            outside_general = self.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=False)
+                            outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=True)
+                            tolerance_violations_count = len(outside_general) + len(outside_weekend)
+                            
+                            if tolerance_violations_count > 0:
+                                logging.info(f"📊 Iteration {improvement_loop_count}: {tolerance_violations_count} tolerance violations detected")
+                                if tolerance_violations_count > 5:
+                                    logging.warning(f"⚠️  Significant tolerance violations: {tolerance_violations_count} workers outside tolerance")
+                            
+                            # Track improvement in violations
+                            if previous_violations > 0 and tolerance_violations_count == 0:
+                                logging.info(f"✅ All tolerance violations resolved at iteration {improvement_loop_count}!")
+                            elif previous_violations > tolerance_violations_count:
+                                improvement = previous_violations - tolerance_violations_count
+                                logging.info(f"📈 Tolerance violations improved: {previous_violations} → {tolerance_violations_count} (-{improvement})")
+                            
+                            self._last_tolerance_violations = tolerance_violations_count
+                            
+                        except Exception as e:
+                            logging.debug(f"Could not check tolerance violations: {e}")
+                else:
+                    # Use cached value between checks
+                    tolerance_violations_count = getattr(self, '_last_tolerance_violations', 0)
+                
                 # Smart checkpoint creation (integrated with backtracking system)
                 backtracking_mgr = self.scheduler.schedule_builder.backtracking_manager
-                if backtracking_mgr.should_create_checkpoint(improvement_loop_count, 'improvement'):
+                
+                # Create checkpoint when violations are resolved
+                if previous_violations > 5 and tolerance_violations_count == 0:
+                    self.scheduler.schedule_builder.create_checkpoint(
+                        phase='improvement',
+                        iteration=improvement_loop_count,
+                        description=f"Tolerance violations resolved - Score: {current_overall_score:.2f}",
+                        reason="violations_resolved"
+                    )
+                    logging.info(f"✓ Checkpoint created after resolving {previous_violations} tolerance violations")
+                elif backtracking_mgr.should_create_checkpoint(improvement_loop_count, 'improvement'):
                     self.scheduler.schedule_builder.create_checkpoint(
                         phase='improvement',
                         iteration=improvement_loop_count,
@@ -296,39 +344,68 @@ class SchedulerCore:
                         reason="smart_checkpoint"
                     )
                 
-                # Check for dead-end and attempt recovery (pass metrics to avoid recreation)
-                if improvement_loop_count > 20 and improvement_loop_count % 5 == 0:
-                    # Check for tolerance violations
-                    tolerance_violations_count = 0
-                    if hasattr(self, 'tolerance_validator'):
-                        try:
-                            outside_general = self.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=False)
-                            outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(is_weekend_only=True)
-                            tolerance_violations_count = len(outside_general) + len(outside_weekend)
-                        except Exception as e:
-                            logging.debug(f"Could not check tolerance violations: {e}")
+                # PRE-CHECK: Evaluate no-improvement cycles BEFORE early stopping
+                no_improvement_cycles = getattr(self, '_no_improvement_cycles', 0)
+                if not cycle_improvement_made:
+                    self._no_improvement_cycles = no_improvement_cycles + 1
+                else:
+                    self._no_improvement_cycles = 0
+                
+                # PROACTIVE BACKTRACKING ACTIVATION (BEFORE early stopping check!)
+                # Check for dead-end in multiple scenarios (AGGRESSIVE THRESHOLDS):
+                # 1. Regular check every 5 iterations after iteration 10 (very early activation)
+                # 2. Immediate check if violations are severe (>10 workers) after iteration 5
+                # 3. Check if violations persist (>5) and no improvement for 2+ cycles after iteration 3
+                should_check_recovery = (
+                    (improvement_loop_count >= 10 and improvement_loop_count % 5 == 0) or
+                    (tolerance_violations_count > 10 and improvement_loop_count >= 5) or
+                    (tolerance_violations_count > 5 and self._no_improvement_cycles >= 2 and improvement_loop_count >= 3)
+                )
+                
+                if should_check_recovery:
+                    # Log recovery check context
+                    if tolerance_violations_count > 10:
+                        logging.warning(f"🚨 Severe tolerance violations detected ({tolerance_violations_count}) - checking recovery")
+                    elif tolerance_violations_count > 5:
+                        logging.info(f"🔍 Checking recovery due to {tolerance_violations_count} tolerance violations")
                     
                     # Attempt recovery with tolerance violations info
                     if backtracking_mgr.auto_recovery(metrics=self.metrics, tolerance_violations=tolerance_violations_count):
-                        logging.info("🔄 Recovery performed - retrying from better state")
+                        logging.info(f"🔄 Recovery performed at iteration {improvement_loop_count} - retrying from better state")
+                        logging.info(f"   Reason: {tolerance_violations_count} tolerance violations detected")
                         
                         # Reset progress monitor after recovery
                         if self.progress_monitor:
                             self.progress_monitor.record_recovery(improvement_loop_count)
+                        
+                        # Reset tolerance tracking after recovery
+                        self._last_tolerance_violations = 0
+                        self._no_improvement_cycles = 0
                         
                         # Continue from recovered state
                         current_overall_score = self.metrics.calculate_overall_schedule_score()
                         overall_improvement_made = True
                         continue
                 
-                # Check if should continue with smart early stopping
-                should_continue, reason = self.metrics.should_continue_optimization(improvement_loop_count)
-                if not should_continue:
-                    logging.info(f"🛑 Parada temprana activada: {reason}")
-                    break
+                # Check if should continue with smart early stopping (AFTER recovery check)
+                # But skip early stopping if we have tolerance violations that need resolution
+                if tolerance_violations_count > 5:
+                    logging.debug(f"Skipping early stopping check - {tolerance_violations_count} tolerance violations need resolution")
+                else:
+                    should_continue, reason = self.metrics.should_continue_optimization(improvement_loop_count)
+                    if not should_continue:
+                        logging.info(f"🛑 Parada temprana activada: {reason}")
+                        break
                 
-                # Traditional improvement check as fallback
-                overall_improvement_made = cycle_improvement_made
+                # ENHANCED IMPROVEMENT CHECK: Consider tolerance violations
+                # If there are significant tolerance violations, continue optimization
+                # even if cycle_improvement_made is False
+                if tolerance_violations_count > 5 and improvement_loop_count < max_improvement_loops - 10:
+                    overall_improvement_made = True  # Force continue if violations exist
+                    logging.info(f"⚠️  Continuing optimization despite no cycle improvement - "
+                               f"{tolerance_violations_count} tolerance violations need resolution")
+                else:
+                    overall_improvement_made = cycle_improvement_made
                 
                 # Log cycle summary
                 loop_end_time = datetime.now()
@@ -342,7 +419,11 @@ class SchedulerCore:
                            f"Operaciones exitosas: {successful_operations}/{len(operation_results)} ---")
                 
                 if not overall_improvement_made:
-                    logging.info("No se detectaron mejoras adicionales. Finalizando fase de mejora.")
+                    if tolerance_violations_count > 0:
+                        logging.warning(f"No se detectaron mejoras pero {tolerance_violations_count} "
+                                      f"violaciones de tolerancia permanecen. Terminando fase de mejora.")
+                    else:
+                        logging.info("No se detectaron mejoras adicionales. Finalizando fase de mejora.")
 
             # Final summary
             if improvement_loop_count >= max_improvement_loops:

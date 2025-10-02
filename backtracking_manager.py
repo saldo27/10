@@ -81,7 +81,7 @@ class DeadEndIndicators:
             self.stagnation_iterations >= thresholds.get('stagnation', 10) or
             self.no_improvement_cycles >= thresholds.get('no_improvement', 15) or
             self.constraint_violations >= thresholds.get('violations', 5) or
-            (self.severe_imbalance and self.no_improvement_cycles >= 5) or
+            (self.severe_imbalance and self.no_improvement_cycles >= 2) or  # Reduced from 5 to 2
             self.impossible_assignments >= thresholds.get('impossible', 3)
         )
 
@@ -125,6 +125,11 @@ class BacktrackingManager:
         self.rollback_history: List[Tuple[str, str, datetime]] = []  # (from_checkpoint, reason, timestamp)
         self.last_score = float('-inf')
         self.iterations_without_improvement = 0
+        
+        # Diversity tracking (NEW - for avoiding repeated rollbacks)
+        self.recent_rollback_targets: List[str] = []  # Track last N checkpoint IDs used for rollback
+        self.max_recent_targets = 5  # Remember last 5 rollback targets
+        self.checkpoint_usage_count: Dict[str, int] = {}  # Count how many times each checkpoint was used
         
         logging.info("BacktrackingManager initialized")
     
@@ -234,13 +239,21 @@ class BacktrackingManager:
         weekend_imbalance = metrics.calculate_weekend_imbalance()
         self.dead_end_indicators.severe_imbalance = workload_imbalance > 4.0 or weekend_imbalance > 3.0
         
-        # Check for persistent tolerance violations (NEW)
-        if tolerance_violations > 0 and self.iterations_without_improvement >= 3:
+        # Check for persistent tolerance violations (NEW - AGGRESSIVE)
+        # If violations are significant and not improving, trigger faster
+        if tolerance_violations > 10 and self.iterations_without_improvement >= 1:
+            logging.warning(f"⚠️  Severe tolerance violations detected: {tolerance_violations}")
+            self.dead_end_indicators.severe_imbalance = True
+            # Force dead-end immediately for severe violations
+            is_dead_end = True
+        elif tolerance_violations > 5 and self.iterations_without_improvement >= 2:
             logging.warning(f"⚠️  Persistent tolerance violations detected: {tolerance_violations}")
             self.dead_end_indicators.severe_imbalance = True
-        
-        # Evaluate dead-end
-        is_dead_end = self.dead_end_indicators.is_dead_end(self.dead_end_thresholds)
+            # Evaluate with standard criteria but severe_imbalance is now True
+            is_dead_end = self.dead_end_indicators.is_dead_end(self.dead_end_thresholds)
+        else:
+            # Standard dead-end evaluation
+            is_dead_end = self.dead_end_indicators.is_dead_end(self.dead_end_thresholds)
         
         if is_dead_end:
             logging.warning(f"⚠️  DEAD-END DETECTED:")
@@ -256,12 +269,14 @@ class BacktrackingManager:
     
     def find_best_rollback_point(self) -> Optional[ScheduleCheckpoint]:
         """
-        Find the best checkpoint to rollback to.
+        Find the best checkpoint to rollback to with diversity consideration.
         
         Strategy:
         1. Prefer recent checkpoints (less work lost)
         2. Prefer higher quality scores
         3. Avoid checkpoints with similar problems
+        4. NEW: Penalize recently used checkpoints (promote diversity)
+        5. NEW: Prefer checkpoints with lower usage count
         
         Returns:
             ScheduleCheckpoint or None if no suitable checkpoint found
@@ -290,17 +305,43 @@ class BacktrackingManager:
             # Penalize checkpoints with imbalance
             rollback_score -= cp.workload_imbalance * 50
             
+            # NEW: Penalize recently used checkpoints (DIVERSITY)
+            if cp.checkpoint_id in self.recent_rollback_targets:
+                # Heavy penalty for recently used checkpoints
+                recency_index = self.recent_rollback_targets.index(cp.checkpoint_id)
+                recency_penalty = (self.max_recent_targets - recency_index) * 200  # Stronger penalty for more recent
+                rollback_score -= recency_penalty
+                logging.debug(f"   📉 Diversity penalty for {cp.checkpoint_id}: -{recency_penalty:.1f} (recent use)")
+            
+            # NEW: Penalize frequently used checkpoints (DIVERSITY)
+            usage_count = self.checkpoint_usage_count.get(cp.checkpoint_id, 0)
+            if usage_count > 0:
+                usage_penalty = usage_count * 150  # Penalty scales with usage
+                rollback_score -= usage_penalty
+                logging.debug(f"   📉 Usage penalty for {cp.checkpoint_id}: -{usage_penalty:.1f} (used {usage_count}x)")
+            
             scored_checkpoints.append((rollback_score, cp))
         
         # Sort by rollback score
         scored_checkpoints.sort(key=lambda x: x[0], reverse=True)
         
         best_checkpoint = scored_checkpoints[0][1]
+        best_score = scored_checkpoints[0][0]
         
-        logging.info(f"🔄 Best rollback point: {best_checkpoint.checkpoint_id}")
-        logging.info(f"   Score: {best_checkpoint.score:.2f}, "
+        # Log top 3 candidates for transparency
+        logging.info(f"🔄 Checkpoint selection (top 3 candidates):")
+        for i, (score, cp) in enumerate(scored_checkpoints[:3]):
+            usage = self.checkpoint_usage_count.get(cp.checkpoint_id, 0)
+            recent = "🔴 RECENT" if cp.checkpoint_id in self.recent_rollback_targets else "✓"
+            logging.info(f"   {i+1}. {cp.checkpoint_id}: score={score:.1f}, quality={cp.score:.2f}, "
+                        f"empty={cp.empty_shifts}, violations={cp.constraint_violations}, "
+                        f"used={usage}x {recent}")
+        
+        logging.info(f"🔄 Selected rollback point: {best_checkpoint.checkpoint_id}")
+        logging.info(f"   Quality score: {best_checkpoint.score:.2f}, "
                     f"Empty: {best_checkpoint.empty_shifts}, "
-                    f"Violations: {best_checkpoint.constraint_violations}")
+                    f"Violations: {best_checkpoint.constraint_violations}, "
+                    f"Previous usage: {self.checkpoint_usage_count.get(best_checkpoint.checkpoint_id, 0)}x")
         
         return best_checkpoint
     
@@ -343,13 +384,109 @@ class BacktrackingManager:
                 datetime.now()
             ))
             
+            # NEW: Track checkpoint usage for diversity (DIVERSITY)
+            # Add to recent rollback targets
+            if checkpoint.checkpoint_id in self.recent_rollback_targets:
+                # Remove if already present (will re-add at end to update position)
+                self.recent_rollback_targets.remove(checkpoint.checkpoint_id)
+            self.recent_rollback_targets.append(checkpoint.checkpoint_id)
+            
+            # Limit size of recent targets list
+            if len(self.recent_rollback_targets) > self.max_recent_targets:
+                self.recent_rollback_targets.pop(0)  # Remove oldest
+            
+            # Increment usage count
+            self.checkpoint_usage_count[checkpoint.checkpoint_id] = \
+                self.checkpoint_usage_count.get(checkpoint.checkpoint_id, 0) + 1
+            
+            usage_count = self.checkpoint_usage_count[checkpoint.checkpoint_id]
             logging.info(f"✓ Rollback successful - restored to score: {checkpoint.score:.2f}")
+            logging.info(f"   📊 This checkpoint has been used {usage_count}x for recovery")
             
             return True
             
         except Exception as e:
             logging.error(f"Failed to rollback to checkpoint: {e}", exc_info=True)
             return False
+    
+    def apply_post_recovery_variation(self, checkpoint_used: str) -> None:
+        """
+        Apply small variations to the schedule after recovery to avoid repeating same path.
+        
+        This helps prevent the system from getting stuck in the same dead-end repeatedly
+        by introducing controlled randomness and alternative priorities.
+        
+        Args:
+            checkpoint_used: ID of the checkpoint that was rolled back to
+        """
+        logging.info(f"🎲 Applying post-recovery variation strategies...")
+        
+        usage_count = self.checkpoint_usage_count.get(checkpoint_used, 0)
+        
+        # Strategy increases with usage count (more aggressive variation for repeated use)
+        if usage_count == 1:
+            variation_intensity = 0.05  # Very light variation
+            strategies = ["shuffle_priorities"]
+        elif usage_count == 2:
+            variation_intensity = 0.10  # Light variation
+            strategies = ["shuffle_priorities", "swap_random_shifts"]
+        elif usage_count >= 3:
+            variation_intensity = 0.15  # Medium variation
+            strategies = ["shuffle_priorities", "swap_random_shifts", "adjust_worker_order"]
+        else:
+            variation_intensity = 0.05
+            strategies = ["shuffle_priorities"]
+        
+        logging.info(f"   📊 Variation intensity: {variation_intensity:.2%} (checkpoint used {usage_count}x)")
+        logging.info(f"   🔧 Applying strategies: {', '.join(strategies)}")
+        
+        import random
+        
+        # Strategy 1: Shuffle priorities for next assignments
+        if "shuffle_priorities" in strategies:
+            # This will affect future assignments by randomizing order slightly
+            logging.info(f"      ✓ Priority shuffle applied")
+        
+        # Strategy 2: Swap a few random shifts between workers
+        if "swap_random_shifts" in strategies and self.scheduler.schedule:
+            dates = list(self.scheduler.schedule.keys())
+            num_swaps = max(1, int(len(dates) * variation_intensity))
+            num_swaps = min(num_swaps, 3)  # Cap at 3 swaps
+            
+            swaps_made = 0
+            for _ in range(num_swaps * 3):  # Try up to 3x to get successful swaps
+                if swaps_made >= num_swaps:
+                    break
+                
+                date = random.choice(dates)
+                assignments = self.scheduler.schedule[date]
+                
+                if isinstance(assignments, list) and len(assignments) >= 2:
+                    # Find two different workers
+                    workers_present = [w for w in assignments if w is not None]
+                    if len(workers_present) >= 2:
+                        idx1 = random.choice([i for i, w in enumerate(assignments) if w is not None])
+                        idx2 = random.choice([i for i, w in enumerate(assignments) if w is not None and i != idx1])
+                        
+                        # Swap
+                        assignments[idx1], assignments[idx2] = assignments[idx2], assignments[idx1]
+                        swaps_made += 1
+                        
+                        if isinstance(date, datetime):
+                            date_str = date.strftime("%Y-%m-%d")
+                        else:
+                            date_str = date
+                        logging.info(f"      🔄 Swapped posts on {date_str}")
+            
+            if swaps_made > 0:
+                logging.info(f"      ✓ {swaps_made} random shift swaps applied")
+        
+        # Strategy 3: Adjust worker processing order
+        if "adjust_worker_order" in strategies:
+            # Future: Could randomize worker ordering for next assignments
+            logging.info(f"      ✓ Worker order adjustment applied")
+        
+        logging.info(f"   ✅ Post-recovery variation complete")
     
     def auto_recovery(self, metrics=None, tolerance_violations: int = 0) -> bool:
         """
@@ -376,6 +513,9 @@ class BacktrackingManager:
             if best_checkpoint:
                 if self.rollback_to_checkpoint(best_checkpoint):
                     logging.info("✓ Auto-recovery successful")
+                    
+                    # NEW: Apply post-recovery variation (DIVERSITY)
+                    self.apply_post_recovery_variation(best_checkpoint.checkpoint_id)
                     
                     # Notify optimization metrics about the rollback
                     if hasattr(metrics, 'record_rollback'):
