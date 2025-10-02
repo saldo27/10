@@ -416,23 +416,26 @@ class DynamicPriorityManager:
     
     def _calculate_post_rotation_imbalance(self) -> float:
         """Calculate post rotation imbalance score (0-100)."""
-        if not hasattr(self.scheduler, 'worker_posts') or not self.scheduler.worker_posts:
+        # Use worker_post_counts which contains the actual count per post
+        if not hasattr(self.scheduler, 'worker_post_counts') or not self.scheduler.worker_post_counts:
             return 0.0
         
         imbalances = []
-        for worker_id, posts in self.scheduler.worker_posts.items():
-            if not posts:
+        for worker_id, post_counts in self.scheduler.worker_post_counts.items():
+            if not post_counts:
                 continue
             
-            total_assignments = sum(posts.values())
+            # post_counts is a dict like {0: 5, 1: 3, 2: 4}
+            total_assignments = sum(post_counts.values())
             if total_assignments < self.scheduler.num_shifts:
                 continue  # Not enough data
             
             expected_per_post = total_assignments / self.scheduler.num_shifts
             
-            for post, count in posts.items():
-                deviation = abs((count - expected_per_post) / expected_per_post * 100)
-                imbalances.append(deviation)
+            for post, count in post_counts.items():
+                if expected_per_post > 0:
+                    deviation = abs((count - expected_per_post) / expected_per_post * 100)
+                    imbalances.append(deviation)
         
         return sum(imbalances) / len(imbalances) if imbalances else 0.0
     
@@ -453,12 +456,37 @@ class DynamicPriorityManager:
         """Check for constraint violations in current schedule."""
         violations = []
         
-        if hasattr(self.scheduler, 'constraint_checker'):
-            constraint_violations = self.scheduler.constraint_checker.check_all_constraints(
-                self.scheduler.schedule,
-                self.scheduler.worker_assignments
-            )
-            violations = constraint_violations
+        # Check if scheduler maintains a violations list
+        if hasattr(self.scheduler, 'constraint_violations'):
+            violations = self.scheduler.constraint_violations
+        
+        # Alternatively, do a simple validation by checking worker assignments
+        # against basic constraints (gap between shifts, consecutive patterns, etc.)
+        if not violations:
+            violations = self._validate_basic_constraints()
+        
+        return violations
+    
+    def _validate_basic_constraints(self) -> List[str]:
+        """Perform basic constraint validation."""
+        violations = []
+        
+        try:
+            for worker_id, assignments in self.scheduler.worker_assignments.items():
+                if not assignments:
+                    continue
+                
+                sorted_dates = sorted(assignments)
+                
+                # Check gap between shifts
+                for i in range(len(sorted_dates) - 1):
+                    days_diff = (sorted_dates[i + 1] - sorted_dates[i]).days
+                    if days_diff < self.scheduler.gap_between_shifts:
+                        violations.append(
+                            f"Worker {worker_id}: gap violation ({days_diff} days)"
+                        )
+        except Exception as e:
+            logging.debug(f"Error validating basic constraints: {e}")
         
         return violations
     
