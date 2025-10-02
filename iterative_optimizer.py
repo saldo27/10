@@ -31,20 +31,21 @@ class IterativeOptimizer:
     until tolerance requirements are met.
     """
     
-    def __init__(self, max_iterations: int = 15, tolerance: float = 0.08):
+    def __init__(self, max_iterations: int = 30, tolerance: float = 0.08):
         """
         Initialize the iterative optimizer with enhanced redistribution algorithms.
         
         Args:
-            max_iterations: Maximum number of optimization iterations (default: 15)
+            max_iterations: Maximum number of optimization iterations (default: 30, increased from 15)
             tolerance: Tolerance percentage (0.08 = 8%)
         """
         self.max_iterations = max_iterations
         self.tolerance = tolerance
-        self.convergence_threshold = 3  # Stop after 3 iterations without improvement
+        self.convergence_threshold = 5  # Stop after 5 iterations without improvement (increased from 3)
         self.stagnation_counter = 0
         self.best_result = None
         self.optimization_history = []
+        self.weekend_only_mode = False  # Special mode when only weekend violations remain
         
         # Constraint parameters - will be updated from scheduler config
         self.gap_between_shifts = 3  # Default minimum gap between shifts
@@ -104,7 +105,12 @@ class IterativeOptimizer:
             weekend_violations = len(validation_report.get('weekend_shift_violations', []))
             total_violations = general_violations + weekend_violations
             
+            # Calcular porcentaje de violaciones de fin de semana
+            weekend_percentage = (weekend_violations / total_violations * 100) if total_violations > 0 else 0
+            
             logging.info(f"   General violations: {general_violations}, Weekend violations: {weekend_violations}")
+            if self.weekend_only_mode:
+                logging.info(f"   🎯 WEEKEND-ONLY MODE ACTIVE - specialized optimization in progress")
             
             # Check if we've achieved optimal result
             if total_violations == 0:
@@ -144,19 +150,51 @@ class IterativeOptimizer:
                 if self.stagnation_counter >= 2:
                     logging.info("   🎯 Applying stagnation penalty - increasing optimization intensity")
             
+            # Detect weekend-only violations mode (ENHANCED - more flexible activation)
+            # Activate if: (1) only weekend violations OR (2) ≥75% are weekend violations OR (3) weekend > general and ≥2
+            activate_weekend_mode = (
+                weekend_violations >= 2 and (
+                    weekend_percentage >= 75.0 or  # ≥75% son de fin de semana
+                    (weekend_violations > general_violations and weekend_violations >= 2) or
+                    (weekend_violations >= 2 and general_violations <= 2)
+                )
+            )
+            
+            if activate_weekend_mode:
+                if not self.weekend_only_mode:
+                    logging.info(f"🎯 Activating WEEKEND-ONLY optimization mode "
+                                f"({weekend_violations} weekend, {general_violations} general, "
+                                f"{weekend_percentage:.1f}% are weekend violations)")
+                    self.weekend_only_mode = True
+                    # Reset stagnation counter for weekend-specific optimization
+                    if self.stagnation_counter > 2:
+                        self.stagnation_counter = 2  # Give it more chances
+            else:
+                if self.weekend_only_mode:
+                    logging.info(f"🔄 Deactivating WEEKEND-ONLY mode (general: {general_violations}, weekend: {weekend_violations})")
+                    self.weekend_only_mode = False
+                # DEBUG: Log why weekend-only mode was NOT activated
+                if weekend_violations > 0 and not self.weekend_only_mode:
+                    logging.debug(f"   ℹ️  Weekend-only NOT active: weekend={weekend_violations}, general={general_violations} "
+                                 f"({weekend_percentage:.1f}% weekend)")
+            
             # Store optimization history
             self.optimization_history.append({
                 'iteration': iteration,
                 'total_violations': total_violations,
                 'general_violations': general_violations,
                 'weekend_violations': weekend_violations,
-                'improvement_made': total_violations < best_violations
+                'improvement_made': total_violations < best_violations,
+                'weekend_only_mode': self.weekend_only_mode
             })
             
-            # Enhanced convergence checks
+            # Enhanced convergence checks (more lenient for weekend-only mode)
             if self._should_stop_optimization(iteration, total_violations):
-                logging.info(f"🛑 Early convergence detected - stopping optimization")
-                break
+                if self.weekend_only_mode and self.stagnation_counter < self.convergence_threshold:
+                    logging.info(f"   ⏳ Weekend-only mode active - continuing optimization...")
+                else:
+                    logging.info(f"🛑 Early convergence detected - stopping optimization")
+                    break
             
             # Apply optimization strategies
             try:
@@ -211,19 +249,39 @@ class IterativeOptimizer:
         
         optimized_schedule = copy.deepcopy(schedule)
         
-        # Strategy 1: Redistribute weekend shifts FIRST (more specific constraints)
+        # WEEKEND-ONLY MODE: Apply aggressive weekend-specific strategies
         weekend_violations = validation_report.get('weekend_shift_violations', [])
-        if weekend_violations:
+        general_violations = validation_report.get('general_shift_violations', [])
+        
+        if self.weekend_only_mode and weekend_violations:
+            logging.info(f"   🎯 WEEKEND-ONLY MODE: Applying focused weekend optimization")
+            
+            # Strategy 1A: Aggressive weekend redistribution (double passes)
             optimized_schedule = self._redistribute_weekend_shifts(
                 optimized_schedule, weekend_violations, workers_data, schedule_config
             )
-        
-        # Strategy 2: Redistribute general shifts SECOND (broader adjustments)
-        general_violations = validation_report.get('general_shift_violations', [])
-        if general_violations:
-            optimized_schedule = self._redistribute_general_shifts(
-                optimized_schedule, general_violations, workers_data, schedule_config
+            # Second pass with higher intensity
+            optimized_schedule = self._redistribute_weekend_shifts(
+                optimized_schedule, weekend_violations, workers_data, schedule_config
             )
+            
+            # Strategy 1B: Direct weekend swaps between over/under assigned workers
+            optimized_schedule = self._apply_weekend_swaps(
+                optimized_schedule, validation_report, workers_data, schedule_config
+            )
+        else:
+            # NORMAL MODE: Standard redistribution
+            # Strategy 1: Redistribute weekend shifts FIRST (more specific constraints)
+            if weekend_violations:
+                optimized_schedule = self._redistribute_weekend_shifts(
+                    optimized_schedule, weekend_violations, workers_data, schedule_config
+                )
+            
+            # Strategy 2: Redistribute general shifts SECOND (broader adjustments)
+            if general_violations:
+                optimized_schedule = self._redistribute_general_shifts(
+                    optimized_schedule, general_violations, workers_data, schedule_config
+                )
         
         # Strategy 3: Apply random perturbations based on intensity - more aggressive for persistent violations
         total_violations = len(general_violations) + len(weekend_violations)
@@ -789,6 +847,163 @@ class IterativeOptimizer:
         logging.info(f"   ✅ Made {redistributions_made} weekend shift redistributions")
         return optimized_schedule
     
+    def _apply_weekend_swaps(self, schedule: Dict, validation_report: Dict,
+                           workers_data: List[Dict], schedule_config: Dict) -> Dict:
+        """Apply direct weekend shift swaps between over-assigned and under-assigned workers."""
+        logging.info(f"   🔄 Applying weekend shift swaps for targeted balancing")
+        
+        optimized_schedule = copy.deepcopy(schedule)
+        
+        # Extract weekend violations from validation report (try both keys for compatibility)
+        weekend_violations = validation_report.get('weekend_shift_violations', [])
+        if not weekend_violations:
+            weekend_violations = validation_report.get('weekend_violations', [])
+        
+        if not weekend_violations:
+            logging.info(f"   ℹ️ No weekend violations to swap")
+            return optimized_schedule
+        
+        logging.info(f"   📊 Found {len(weekend_violations)} weekend violations to process")
+        
+        # Separate over and under assigned workers
+        over_assigned = []
+        under_assigned = []
+        
+        for violation in weekend_violations:
+            worker_name = violation['worker']
+            deviation = violation['deviation_percentage']
+            
+            if deviation > self.tolerance * 100:  # Over-assigned (e.g., +13.3%)
+                over_assigned.append({
+                    'worker': worker_name,
+                    'deviation': deviation,
+                    'excess': violation.get('excess', 0)
+                })
+            elif deviation < -self.tolerance * 100:  # Under-assigned (e.g., -25%, -16.7%)
+                under_assigned.append({
+                    'worker': worker_name,
+                    'deviation': deviation,
+                    'shortage': abs(violation.get('shortage', 0))
+                })
+        
+        # Sort by severity (absolute deviation)
+        over_assigned.sort(key=lambda x: abs(x['deviation']), reverse=True)
+        under_assigned.sort(key=lambda x: abs(x['deviation']), reverse=True)
+        
+        logging.info(f"   📊 Over-assigned: {len(over_assigned)}, Under-assigned: {len(under_assigned)}")
+        for over in over_assigned:
+            logging.info(f"      🔵 {over['worker']}: +{over['deviation']:.1f}% ({over['excess']} excess)")
+        for under in under_assigned:
+            logging.info(f"      🔴 {under['worker']}: {under['deviation']:.1f}% ({under['shortage']} shortage)")
+        
+        # Get all weekend dates
+        weekend_dates = []
+        for date_key in optimized_schedule.keys():
+            try:
+                if isinstance(date_key, datetime):
+                    date_obj = date_key
+                else:
+                    date_obj = datetime.strptime(date_key, "%Y-%m-%d")
+                
+                if date_obj.weekday() in [5, 6]:  # Saturday or Sunday
+                    weekend_dates.append(date_key)
+            except:
+                continue
+        
+        logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates for swaps")
+        
+        swaps_made = 0
+        max_swaps = min(20, len(weekend_violations) * 2)  # Allow multiple swaps per worker
+        
+        # Perform direct swaps between over and under assigned pairs
+        for over_info in over_assigned:
+            if swaps_made >= max_swaps:
+                break
+            
+            over_worker = over_info['worker']
+            
+            # Find all weekend shifts for over-assigned worker
+            over_weekend_shifts = []
+            for date_key in weekend_dates:
+                if date_key in optimized_schedule:
+                    assignments = optimized_schedule[date_key]
+                    
+                    if isinstance(assignments, dict):
+                        for shift_type, workers in assignments.items():
+                            if over_worker in workers:
+                                over_weekend_shifts.append({
+                                    'date': date_key,
+                                    'shift_type': shift_type,
+                                    'workers_list': workers
+                                })
+                    elif isinstance(assignments, list):
+                        for post_idx, worker in enumerate(assignments):
+                            if worker == over_worker:
+                                over_weekend_shifts.append({
+                                    'date': date_key,
+                                    'shift_type': f"Post_{post_idx}",
+                                    'workers_list': assignments,
+                                    'post_idx': post_idx
+                                })
+            
+            # Try to swap with under-assigned workers
+            for under_info in under_assigned:
+                if under_info['shortage'] <= 0 or swaps_made >= max_swaps:
+                    continue
+                
+                under_worker = under_info['worker']
+                
+                # Find potential swap opportunities on same dates
+                for over_shift in over_weekend_shifts:
+                    date_key = over_shift['date']
+                    shift_type = over_shift['shift_type']
+                    workers_list = over_shift['workers_list']
+                    
+                    # Check if under-assigned worker can take this shift
+                    if under_worker not in workers_list and self._can_worker_take_shift(
+                        under_worker, date_key, shift_type, optimized_schedule, workers_data
+                    ):
+                        # Check if over-assigned worker can swap to a different shift on same date
+                        # (for now, simple replacement - can enhance to full swap later)
+                        
+                        # Perform the swap
+                        if isinstance(workers_list, list):
+                            if 'post_idx' in over_shift:
+                                # Direct index replacement for list format
+                                workers_list[over_shift['post_idx']] = under_worker
+                            else:
+                                # Find and replace
+                                try:
+                                    idx = workers_list.index(over_worker)
+                                    workers_list[idx] = under_worker
+                                except ValueError:
+                                    continue
+                        else:
+                            # Dict format
+                            workers_list.remove(over_worker)
+                            workers_list.append(under_worker)
+                        
+                        # Update shortage tracking
+                        under_info['shortage'] -= 1
+                        over_info['excess'] -= 1
+                        swaps_made += 1
+                        
+                        if isinstance(date_key, datetime):
+                            date_display = date_key.strftime('%Y-%m-%d (%A)')
+                        else:
+                            date_display = f"{date_key} ({datetime.strptime(date_key, '%Y-%m-%d').strftime('%A')})"
+                        
+                        logging.info(f"      🔄 SWAP: {over_worker} → {under_worker} on {date_display} {shift_type}")
+                        
+                        # Only do one swap per shift to avoid over-correction
+                        break
+                
+                if swaps_made >= max_swaps:
+                    break
+        
+        logging.info(f"   ✅ Made {swaps_made} weekend shift swaps")
+        return optimized_schedule
+    
     def _apply_random_perturbations(self, schedule: Dict, workers_data: List[Dict], 
                                   schedule_config: Dict, intensity: float = 0.1) -> Dict:
         """Apply random perturbations to escape local optima."""
@@ -1022,10 +1237,19 @@ class IterativeOptimizer:
         Returns:
             bool: True if optimization should stop
         """
-        # Stop if stagnation threshold reached
+        # Stop if stagnation threshold reached BUT NOT if there are significant violations
         if self.stagnation_counter >= self.convergence_threshold:
-            logging.info(f"   🛑 Stopping due to stagnation ({self.stagnation_counter} iterations without improvement)")
-            return True
+            if current_violations > 5:  # Lowered from 8 to be more aggressive
+                # Too many violations - keep going despite stagnation
+                logging.info(f"   ⚠️ Plateau detected but continuing due to high violations ({current_violations})")
+                return False
+            elif current_violations > 2 and self.weekend_only_mode:  # Lowered from 5 to 2
+                # Weekend-only mode with significant violations - keep going
+                logging.info(f"   ⚠️ Plateau in weekend-only mode but continuing ({current_violations} violations)")
+                return False
+            else:
+                logging.info(f"   🛑 Stopping due to stagnation ({self.stagnation_counter} iterations without improvement)")
+                return True
         
         # Stop if violations are acceptably low
         if current_violations <= 5 and iteration >= 8:  # More lenient criteria
