@@ -42,7 +42,7 @@ class PasswordScreen(Screen):
         super(PasswordScreen, self).__init__(**kwargs)
         layout = BoxLayout(orientation='vertical', padding=50, spacing=20)
 
-        layout.add_widget(Label(text='Introduzca la contraseña:', size_hint_y=None, height=40))
+        layout.add_widget(Label(text='Introduza la contraseña:', size_hint_y=None, height=40))
 
         self.password_input = TextInput(
             multiline=False,
@@ -965,7 +965,7 @@ class SetupScreen(Screen):
         
         # Title with some vertical space
         title_layout = BoxLayout(size_hint_y=0.1, padding=(0, 10))
-        title = Label(text="Datos Generales", font_size=24, bold=True)
+        title = Label(text="Schedule Setup", font_size=24, bold=True)
         title_layout.add_widget(title)
         self.layout.add_widget(title_layout)
         
@@ -1087,7 +1087,7 @@ class SetupScreen(Screen):
         
         # Add some explanation text
         help_text = Label(
-            text="Tip: Introduce Festivos (separados por comas)",
+            text="Tip: Introduce Festivos separados por comas. Ej: 25-12-2025, 01-06-2026",
             halign='left',
             valign='top',
             size_hint_y=None,
@@ -1476,7 +1476,7 @@ class WorkerDetailsScreen(Screen):
         self.layout = BoxLayout(orientation='vertical', padding=20, spacing=10)
 
         # Title
-        self.title_label = Label(text='Datos de cada médico', size_hint_y=0.1)
+        self.title_label = Label(text='Worker Details', size_hint_y=0.1)
         self.layout.add_widget(self.title_label)
 
         # Form layout
@@ -1740,11 +1740,11 @@ class WorkerDetailsScreen(Screen):
                 self.incompatible_checkbox.active = next_worker.get('is_incompatible', False)
         
             # Update title and buttons
-            self.title_label.text = f'Datos de cada médico({current_index + 2}/{total_workers})'
+            self.title_label.text = f'Worker Details ({current_index + 2}/{total_workers})'
             self.prev_btn.disabled = False
         
             if current_index + 1 == total_workers - 1:
-                self.next_btn.text = 'Finalizar'
+                self.next_btn.text = 'Finish'
         else:
             # We're at the last worker, generate schedule
             self.generate_schedule()
@@ -1769,13 +1769,13 @@ class WorkerDetailsScreen(Screen):
             self.incompatible_checkbox.active = worker.get('is_incompatible', False)
             
         # Update title
-        self.title_label.text = f'Datos de cada médico ({current_index + 1}/{app.schedule_config.get("num_workers", 0)})'
+        self.title_label.text = f'Worker Details ({current_index + 1}/{app.schedule_config.get("num_workers", 0)})'
         
         # Update button text based on position
         if current_index == app.schedule_config.get('num_workers', 0) - 1:
-            self.next_btn.text = 'Finalizar'
+            self.next_btn.text = 'Finish'
         else:
-            self.next_btn.text = 'Siguiente'
+            self.next_btn.text = 'Next'
             
         # Disable Previous button if on first worker
         self.prev_btn.disabled = (current_index == 0)

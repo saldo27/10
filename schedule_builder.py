@@ -7,6 +7,7 @@ import math
 from typing import Dict, List, Set, Optional, Tuple, Any, TYPE_CHECKING
 from exceptions import SchedulerError
 from adaptive_iterations import AdaptiveIterationManager
+from dynamic_priority_manager import DynamicPriorityManager, PriorityWeights
 
 if TYPE_CHECKING:
     from scheduler import Scheduler
@@ -61,6 +62,10 @@ class ScheduleBuilder:
         self.iteration_manager = AdaptiveIterationManager(scheduler)
         self.adaptive_config = self.iteration_manager.calculate_adaptive_iterations()
         logging.info(f"Adaptive config: {self.adaptive_config}")
+        
+        # Initialize dynamic priority manager
+        self.priority_manager = DynamicPriorityManager(scheduler)
+        self.current_weights = self.priority_manager.base_weights
         
         # Build performance caches
         self._build_optimization_caches()
@@ -860,10 +865,13 @@ class ScheduleBuilder:
         return True
 
     def _calculate_target_shift_score(self, worker, mandatory_dates, relaxation_level):
-        """Calculate score based on target shifts and mandatory assignments"""
+        """Calculate score based on target shifts and mandatory assignments with dynamic weights"""
         worker_id = worker['id']
         current_shifts = len(self.worker_assignments[worker_id])
         target_shifts = worker.get('target_shifts', 0)
+        
+        # Get current dynamic weights
+        weights = self.current_weights
         
         # Count mandatory shifts that are already assigned
         mandatory_shifts_assigned = sum(
@@ -888,18 +896,25 @@ class ScheduleBuilder:
             and relaxation_level < 2):
             return float('-inf')
         
-        # Calculate score based on shift difference
+        # Calculate score based on shift difference with dynamic weights
         score = 0
         if shift_difference <= 0:
+            # Apply dynamic excess penalty
+            penalty_weight = weights.target_excess_penalty
+            
+            # Adjust penalty based on relaxation level
             if relaxation_level == 0:
-                score -= 8000 * abs(shift_difference)  # Heavy penalty, not impossible
+                penalty_multiplier = 4.0
             elif relaxation_level == 1:
-                score -= 5000 * abs(shift_difference)  # Moderate penalty
+                penalty_multiplier = 2.5
             else:
-                score -= 2000 * abs(shift_difference)  # Light penalty at high relaxation
+                penalty_multiplier = 1.0
+            
+            score += penalty_weight * penalty_multiplier * abs(shift_difference)
         else:
-            # Prioritize workers who are furthest below target
-            score += shift_difference * 2000
+            # Prioritize workers who are furthest below target using dynamic weight
+            deficit_weight = weights.target_deficit_weight * weights.coverage_urgency_multiplier
+            score += shift_difference * deficit_weight
             
         return score
 
@@ -970,17 +985,22 @@ class ScheduleBuilder:
             return float('-inf')
     
     def _calculate_additional_scoring_factors(self, worker, date, relaxation_level):
-        """Calculate additional scoring factors like weekend balance and weekly distribution"""
+        """Calculate additional scoring factors like weekend balance and weekly distribution with dynamic weights"""
         worker_id = worker['id']
         score = 0
         
-        # Weekend Balance Score
+        # Get current dynamic weights
+        weights = self.current_weights
+        
+        # Weekend Balance Score with dynamic weight
         if self._is_weekend_or_holiday(date):
             special_day_assignments = sum(
                 1 for d in self.worker_assignments[worker_id]
                 if self._is_weekend_or_holiday(d)
             )
-            score -= special_day_assignments * 300 
+            # Apply dynamic weekend balance penalty
+            weekend_penalty = weights.weekend_balance_penalty * weights.balance_urgency_multiplier
+            score += weekend_penalty * special_day_assignments
 
         # Weekly Balance Score - avoid concentration in some weeks
         week_number = date.isocalendar()[1]
@@ -994,17 +1014,20 @@ class ScheduleBuilder:
         avg_week_count = len(assignments) / max(1, len(week_counts)) if week_counts else 0
 
         if current_week_count < avg_week_count:
-            score += 500  # Bonus for weeks with fewer assignments
+            # Apply dynamic weekly balance bonus
+            weekly_bonus = weights.weekly_balance_bonus * weights.balance_urgency_multiplier
+            score += weekly_bonus
 
         # Schedule Progression Score - adjust priority as schedule fills up
         total_days = (self.end_date - self.start_date).days if self.end_date > self.start_date else 1
         schedule_completion = sum(len(s) for s in self.schedule.values()) / (total_days * self.num_shifts)
 
-        # Additional progression bonus
+        # Additional progression bonus with dynamic weight
         current_shifts = len(self.worker_assignments[worker_id])
         target_shifts = worker.get('target_shifts', 0)
         shift_difference = target_shifts - current_shifts
-        score += shift_difference * 500 * schedule_completion
+        progression_bonus = weights.progression_bonus * weights.coverage_urgency_multiplier
+        score += shift_difference * progression_bonus * schedule_completion
 
         return score
 
@@ -1105,6 +1128,21 @@ class ScheduleBuilder:
     # ========================================
     # 6. SCHEDULE GENERATION METHODS
     # ========================================
+    
+    def update_dynamic_priorities(self) -> None:
+        """
+        Update scoring weights based on current schedule progress.
+        Should be called periodically during schedule generation.
+        """
+        # Analyze current progress
+        progress = self.priority_manager.analyze_progress()
+        
+        # Adjust weights based on progress
+        self.current_weights = self.priority_manager.adjust_weights(progress)
+        
+        logging.debug(f"Dynamic priorities updated for {progress.phase} phase "
+                     f"({progress.coverage_percentage:.1f}% coverage)")
+    
     def _assign_mandatory_guards(self):
         logging.info("Starting mandatory guard assignment…")
         assigned_count = 0

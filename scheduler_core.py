@@ -139,6 +139,9 @@ class SchedulerCore:
             # Synchronize tracking data
             self.scheduler.schedule_builder._synchronize_tracking_data()
             
+            # Update dynamic priorities after mandatory assignment
+            self.scheduler.schedule_builder.update_dynamic_priorities()
+            
             # Save initial state as best
             self.scheduler.schedule_builder._save_current_as_best(initial=True)
             
@@ -185,6 +188,10 @@ class SchedulerCore:
                 improvement_loop_count += 1
                 
                 logging.info(f"--- Starting Enhanced Improvement Loop {improvement_loop_count} ---")
+                
+                # Update dynamic priorities at the start of each improvement iteration
+                if improvement_loop_count % 5 == 1:  # Update every 5 iterations to balance performance
+                    self.scheduler.schedule_builder.update_dynamic_priorities()
                 
                 # Get current state for decision making
                 current_state = {
@@ -328,6 +335,9 @@ class SchedulerCore:
         logging.info("Phase 4: Finalizing schedule...")
         
         try:
+            # Update dynamic priorities one final time before finalization
+            self.scheduler.schedule_builder.update_dynamic_priorities()
+            
             # Final adjustment of last post distribution
             logging.info("Performing final last post distribution adjustment...")
             max_iterations = self.config.get('last_post_adjustment_max_iterations', 
