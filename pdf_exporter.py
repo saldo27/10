@@ -81,6 +81,7 @@ class PDFExporter:
     def _safe_file_write(self, doc, story, original_filename):
         """
         Safely write the PDF file, handling permission errors
+        Preserves the pagesize and orientation from the original document
         """
         safe_filename = self._get_safe_filename(original_filename)
         
@@ -89,10 +90,14 @@ class PDFExporter:
             temp_dir = tempfile.gettempdir()
             temp_filename = os.path.join(temp_dir, f"temp_pdf_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
             
-            # Create the temporary document
+            # Create the temporary document - PRESERVE the pagesize from original doc
             temp_doc = SimpleDocTemplate(
-                temp_filename, pagesize=A4,
-                rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm
+                temp_filename, 
+                pagesize=doc.pagesize,  # Use the original document's pagesize (preserves landscape/portrait)
+                rightMargin=doc.rightMargin,
+                leftMargin=doc.leftMargin,
+                topMargin=doc.topMargin,
+                bottomMargin=doc.bottomMargin
             )
             
             # Build to temporary file
