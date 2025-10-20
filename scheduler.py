@@ -2045,6 +2045,34 @@ class Scheduler:
             worker['target_shifts'] += 1
             logging.info(f"Redistributed 1 shift to worker {worker['id']}")
 
+    def is_mandatory_shift(self, worker_id: str, date: datetime) -> bool:
+        """
+        Check if a shift is mandatory for a given worker on a specific date.
+        This method is used by optimization components to ensure mandatory shifts
+        are never modified, removed, or redistributed.
+        
+        Args:
+            worker_id: Worker identifier
+            date: Date to check
+            
+        Returns:
+            bool: True if the shift is mandatory for this worker on this date
+        """
+        worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker:
+            return False
+            
+        mandatory_days_str = worker.get('mandatory_days', '')
+        if not mandatory_days_str:
+            return False
+            
+        try:
+            mandatory_dates = self.date_utils.parse_dates(mandatory_days_str)
+            return date in mandatory_dates
+        except Exception as e:
+            logging.error(f"Error parsing mandatory_days for worker {worker_id}: {e}")
+            return False
+
     # ========================================
     # 11. REAL-TIME OPERATIONS
     # ========================================

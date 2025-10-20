@@ -71,6 +71,11 @@ class IterativeOptimizer:
         logging.info("🔄 Starting iterative schedule optimization...")
         logging.info(f"Debug: Optimizer called with {len(schedule)} schedule entries and {len(workers_data)} workers")
         
+        # Store reference to scheduler for mandatory shift checks
+        self.scheduler = getattr(scheduler_core, 'scheduler', None)
+        if not self.scheduler:
+            logging.warning("Scheduler reference not found in scheduler_core")
+        
         # Update constraint parameters from scheduler
         if hasattr(scheduler_core, 'scheduler') and hasattr(scheduler_core.scheduler, 'gap_between_shifts'):
             self.gap_between_shifts = scheduler_core.scheduler.gap_between_shifts
@@ -472,6 +477,11 @@ class IterativeOptimizer:
                 if shifts_removed >= shifts_to_remove:
                     break
                 
+                # CRITICAL: Skip mandatory shifts - they cannot be redistributed
+                if self._is_mandatory_shift(excess_worker, date_key, workers_data):
+                    logging.debug(f"      🔒 SKIPPING mandatory shift for {excess_worker} on {date_key} - cannot redistribute")
+                    continue
+                
                 logging.debug(f"      📅 Trying to reassign {shift_type} on {date_key} from {excess_worker}")
                 
                 # Find best recipient for this shift
@@ -684,6 +694,96 @@ class IterativeOptimizer:
             logging.error(f"Error checking if {worker_name} can take shift: {e}")
             return False
     
+    def _is_mandatory_shift(self, worker_name: str, date_key, workers_data: List[Dict]) -> bool:
+        """
+        Check if a shift is mandatory for a given worker on a specific date.
+        Mandatory shifts MUST NOT be removed, modified, or redistributed.
+        
+        Args:
+            worker_name: Name of the worker (e.g., "Worker 12")
+            date_key: Date of the shift (datetime object or string)
+            workers_data: Worker configuration data
+            
+        Returns:
+            bool: True if this is a mandatory shift (DO NOT TOUCH)
+        """
+        try:
+            # Parse date from both datetime and string formats
+            if isinstance(date_key, datetime):
+                shift_date = date_key
+            else:
+                shift_date = datetime.strptime(date_key, "%Y-%m-%d")
+            
+            # Find worker data using flexible matching (same as _can_worker_take_shift)
+            worker_data = None
+            for w in workers_data:
+                w_id = w.get('id', '')
+                
+                # Try exact match first
+                if w_id == worker_name:
+                    worker_data = w
+                    break
+                # Try string representation match
+                elif str(w_id) == str(worker_name):
+                    worker_data = w  
+                    break
+                # Try "Worker X" format matching
+                elif worker_name.startswith('Worker '):
+                    try:
+                        worker_number = worker_name.split(' ')[1]
+                        if str(w_id) == worker_number:
+                            worker_data = w
+                            break
+                    except (IndexError, ValueError):
+                        continue
+                # Try reverse: if w_id is numeric and worker_name is "Worker X"
+                elif str(w_id).isdigit() and worker_name == f"Worker {w_id}":
+                    worker_data = w
+                    break
+            
+            if not worker_data:
+                return False
+            
+            # Check if this date is in the worker's mandatory_days
+            mandatory_days_str = worker_data.get('mandatory_days', '')
+            if not mandatory_days_str:
+                return False
+            
+            # Use scheduler's method if available
+            if self.scheduler and hasattr(self.scheduler, 'is_mandatory_shift'):
+                # Extract numeric ID from worker_name if needed
+                worker_id = worker_data.get('id', worker_name)
+                return self.scheduler.is_mandatory_shift(worker_id, shift_date)
+            
+            # Fallback: parse mandatory_days manually
+            try:
+                # Split by semicolon and parse dates
+                date_strings = [d.strip() for d in mandatory_days_str.split(';') if d.strip()]
+                mandatory_dates = []
+                for date_str in date_strings:
+                    try:
+                        # Try DD-MM-YYYY format
+                        mandatory_date = datetime.strptime(date_str, '%d-%m-%Y')
+                        mandatory_dates.append(mandatory_date)
+                    except ValueError:
+                        # Try other formats if needed
+                        pass
+                
+                # Check if shift_date matches any mandatory date (compare just the date part)
+                for mandatory_date in mandatory_dates:
+                    if shift_date.date() == mandatory_date.date():
+                        return True
+                
+                return False
+                
+            except Exception as e:
+                logging.error(f"Error parsing mandatory_days for {worker_name}: {e}")
+                return False
+            
+        except Exception as e:
+            logging.error(f"Error checking if shift is mandatory for {worker_name}: {e}")
+            return False
+    
     def _redistribute_weekend_shifts(self, schedule: Dict, violations: List[Dict], 
                                    workers_data: List[Dict], schedule_config: Dict) -> Dict:
         """Redistribute weekend shifts to fix tolerance violations with enhanced targeting."""
@@ -797,6 +897,11 @@ class IterativeOptimizer:
             for i, (date_key, shift_type, workers) in enumerate(weekend_shifts):
                 if i >= shifts_to_redistribute or redistributions_made >= max_redistributions:
                     break
+                
+                # CRITICAL: Skip mandatory shifts - they cannot be redistributed
+                if self._is_mandatory_shift(excess_worker, date_key, workers_data):
+                    logging.debug(f"      🔒 SKIPPING mandatory weekend shift for {excess_worker} on {date_key} - cannot redistribute")
+                    continue
                 
                 # Find best weekend recipient
                 best_recipient = None
@@ -967,25 +1072,41 @@ class IterativeOptimizer:
                                 })
             
             # Try to swap with under-assigned workers
+            attempts = 0
+            rejections = {'already_assigned': 0, 'constraint_failed': 0, 'no_shifts_found': 0}
+            
             for under_info in under_assigned:
                 if under_info['shortage'] <= 0 or swaps_made >= max_swaps:
                     continue
                 
                 under_worker = under_info['worker']
                 
+                if not over_weekend_shifts:
+                    rejections['no_shifts_found'] += 1
+                    logging.debug(f"      ⚠️ No weekend shifts found for over-assigned workers to swap")
+                    continue
+                
                 # Find potential swap opportunities on same dates
                 for over_shift in over_weekend_shifts:
+                    attempts += 1
                     date_key = over_shift['date']
                     shift_type = over_shift['shift_type']
                     workers_list = over_shift['workers_list']
                     
+                    # CRITICAL: Skip mandatory shifts - they cannot be swapped
+                    if self._is_mandatory_shift(over_worker, date_key, workers_data):
+                        logging.debug(f"      🔒 SKIPPING mandatory shift for {over_worker} on {date_key} - cannot swap")
+                        continue
+                    
+                    # Check if under-assigned worker is already on this shift
+                    if under_worker in workers_list:
+                        rejections['already_assigned'] += 1
+                        continue
+                    
                     # Check if under-assigned worker can take this shift
-                    if under_worker not in workers_list and self._can_worker_take_shift(
+                    if self._can_worker_take_shift(
                         under_worker, date_key, shift_type, optimized_schedule, workers_data
                     ):
-                        # Check if over-assigned worker can swap to a different shift on same date
-                        # (for now, simple replacement - can enhance to full swap later)
-                        
                         # Perform the swap
                         if isinstance(workers_list, list):
                             if 'post_idx' in over_shift:
@@ -1017,11 +1138,21 @@ class IterativeOptimizer:
                         
                         # Only do one swap per shift to avoid over-correction
                         break
+                    else:
+                        rejections['constraint_failed'] += 1
                 
                 if swaps_made >= max_swaps:
                     break
         
-        logging.info(f"   ✅ Made {swaps_made} weekend shift swaps")
+        # Enhanced logging for diagnostics
+        if swaps_made == 0 and attempts > 0:
+            logging.warning(f"   ⚠️ SWAP DIAGNOSIS: {attempts} attempts, 0 successful")
+            logging.warning(f"      - Already assigned: {rejections['already_assigned']}")
+            logging.warning(f"      - Constraint failed: {rejections['constraint_failed']}")
+            logging.warning(f"      - No shifts found: {rejections['no_shifts_found']}")
+            logging.warning(f"      💡 TIP: Constraints may be too strict (gap_between_shifts, 7/14 rule)")
+        
+        logging.info(f"   ✅ Made {swaps_made} weekend shift swaps (attempts: {attempts})")
         return optimized_schedule
     
     def _apply_random_perturbations(self, schedule: Dict, workers_data: List[Dict], 
@@ -1100,6 +1231,12 @@ class IterativeOptimizer:
             if isinstance(current_workers, list) and len(current_workers) > 0:
                 # Replace random worker with another random worker
                 old_worker = random.choice(current_workers)
+                
+                # CRITICAL: Skip mandatory shifts - they cannot be perturbed
+                if self._is_mandatory_shift(old_worker, random_date, workers_data):
+                    logging.debug(f"      🔒 SKIPPING mandatory shift for {old_worker} on {random_date} - cannot perturb")
+                    continue
+                
                 new_worker = random.choice(worker_names)
                 
                 if new_worker not in current_workers:
@@ -1174,6 +1311,11 @@ class IterativeOptimizer:
                     if isinstance(assignments, dict):
                         for shift_type, workers in assignments.items():
                             if worker in workers and len(workers) > 1:
+                                # CRITICAL: Skip mandatory shifts - they cannot be forced
+                                if self._is_mandatory_shift(worker, date_key, workers_data):
+                                    logging.debug(f"      🔒 SKIPPING mandatory shift for {worker} on {date_key} - cannot force")
+                                    continue
+                                
                                 # Try to find a valid alternative worker
                                 valid_alternatives = []
                                 for candidate in worker_names:
@@ -1202,6 +1344,11 @@ class IterativeOptimizer:
                                     break
                     elif isinstance(assignments, list):
                         if worker in assignments:
+                            # CRITICAL: Skip mandatory shifts - they cannot be forced
+                            if self._is_mandatory_shift(worker, date_key, workers_data):
+                                logging.debug(f"      🔒 SKIPPING mandatory shift for {worker} on {date_key} - cannot force")
+                                continue
+                            
                             # Try constraint-aware replacement
                             valid_alternatives = []
                             for candidate in worker_names:
