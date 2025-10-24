@@ -1134,16 +1134,23 @@ class ScheduleBuilder:
                     if len(self.schedule[date]) <= post: self.schedule[date].extend([None] * (post + 1 - len(self.schedule[date])))
 
                     if self.schedule[date][post] is None:
-                        # Check incompatibility before placing
+                        # CRITICAL: For MANDATORY assignments, only check HARD constraints
+                        # (incompatibility and unavailability), NOT soft constraints like gap or patterns
+                        # because mandatory_days MUST be assigned regardless of normal constraints
+                        
+                        # Check incompatibility before placing (HARD constraint)
                         others_on_date = [w for i, w in enumerate(self.schedule.get(date, [])) if i != post and w is not None]
                         if not self._check_incompatibility_with_list(worker_id, others_on_date):
                             logging.debug(f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} post {post} incompatible. Trying next post.")
                             continue
                         
-                        # CRITICAL FIX: Add comprehensive constraint check for mandatory assignments
-                        if not self._can_assign_worker(worker_id, date, post):
-                            logging.debug(f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} post {post} violates constraints. Trying next post.")
+                        # Check if worker is unavailable (days off, work periods) - HARD constraint
+                        if self._is_worker_unavailable(worker_id, date):
+                            logging.warning(f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} conflicts with days_off or work_periods. This is a configuration error.")
                             continue
+                        
+                        # NOTE: We do NOT check gap, 7/14 pattern, or weekend limits for mandatory assignments
+                        # because mandatory_days override these soft constraints
                         
                         self.schedule[date][post] = worker_id
                         self.worker_assignments.setdefault(worker_id, set()).add(date) # Use self.worker_assignments

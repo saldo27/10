@@ -171,7 +171,7 @@ class TurnAdjustmentManager:
             date: Fecha del turno
             
         Returns:
-            True si el trabajador puede liberar el turno
+            True si el trabajador puede liberar el turno (False si es mandatory)
         """
         # Encontrar datos del trabajador
         worker_data = None
@@ -183,18 +183,25 @@ class TurnAdjustmentManager:
         if not worker_data:
             return False
         
-        # Verificar si el día es obligatorio (mandatory_days)
+        # CRITICAL: Verificar si el día es obligatorio (mandatory_days)
+        # Los mandatory_days son INAMOVIBLES y nunca pueden ser liberados
         mandatory_str = worker_data.get('mandatory_days', '')
         if mandatory_str.strip():
             try:
-                for date_str in mandatory_str.split(';'):
-                    date_str = date_str.strip()
-                    if date_str:
-                        mandatory_date = datetime.strptime(date_str, '%d-%m-%Y')
-                        if mandatory_date.date() == date.date():
-                            return False  # No puede liberar días obligatorios
-            except:
-                pass  # En caso de error, asumir que puede liberar
+                # Usar el mismo método que el resto del código para parsear fechas
+                from utilities import DateTimeUtils
+                date_utils = DateTimeUtils()
+                mandatory_dates = date_utils.parse_dates(mandatory_str)
+                
+                # Verificar si la fecha es mandatory
+                for mandatory_date in mandatory_dates:
+                    if mandatory_date.date() == date.date():
+                        logging.info(f"Worker {worker_id} CANNOT release shift on {date.strftime('%d-%m-%Y')} - it is a MANDATORY assignment")
+                        return False  # NO puede liberar días obligatorios
+            except Exception as e:
+                logging.error(f"Error parsing mandatory_days for worker {worker_id}: {e}")
+                # En caso de error al parsear, asumir que NO puede liberar (fail-safe)
+                return False
         
         return True
     

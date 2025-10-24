@@ -141,6 +141,12 @@ class IncrementalUpdater:
             if current_worker is None:
                 return UpdateResult(False, "No worker assigned to this shift")
             
+            # CRITICAL: Check if this is a mandatory assignment - cannot unassign
+            if hasattr(self.scheduler, 'schedule_builder') and self.scheduler.schedule_builder:
+                if self.scheduler.schedule_builder._is_mandatory(current_worker, shift_date):
+                    logging.warning(f"Cannot unassign worker {current_worker} from {shift_date.strftime('%d-%m-%Y')} - this is a MANDATORY assignment")
+                    return UpdateResult(False, f"Cannot unassign: Worker {current_worker} has a MANDATORY assignment on {shift_date.strftime('%d-%m-%Y')}")
+            
             # Create rollback data
             rollback_data = self._create_unassignment_rollback_data(shift_date, post_index, current_worker)
             
@@ -376,6 +382,26 @@ class IncrementalUpdater:
         """Check if swap violates constraints"""
         constraints_ok = True
         conflicts = []
+        
+        # CRITICAL: Check if either assignment is mandatory - mandatory assignments cannot be swapped
+        if worker1:
+            from schedule_builder import ScheduleBuilder
+            # We need to check if worker1 has a mandatory assignment on shift_date1
+            if hasattr(self.scheduler, 'schedule_builder') and self.scheduler.schedule_builder:
+                if self.scheduler.schedule_builder._is_mandatory(worker1, shift_date1):
+                    constraints_ok = False
+                    conflicts.append(f"Worker {worker1} has a MANDATORY assignment on {shift_date1.strftime('%d-%m-%Y')} - cannot swap")
+        
+        if worker2:
+            # Check if worker2 has a mandatory assignment on shift_date2
+            if hasattr(self.scheduler, 'schedule_builder') and self.scheduler.schedule_builder:
+                if self.scheduler.schedule_builder._is_mandatory(worker2, shift_date2):
+                    constraints_ok = False
+                    conflicts.append(f"Worker {worker2} has a MANDATORY assignment on {shift_date2.strftime('%d-%m-%Y')} - cannot swap")
+        
+        # If any mandatory assignment involved, stop here
+        if not constraints_ok:
+            return UpdateResult(False, "Cannot swap: one or more assignments are MANDATORY and cannot be moved", conflicts=conflicts)
         
         # Check worker1 constraints for shift2
         if worker1:

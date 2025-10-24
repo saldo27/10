@@ -1322,9 +1322,23 @@ class Scheduler:
                     date1 = violation['date1']
                     date2 = violation['date2']
                 
-                    # Decide which date to unassign
-                    # Generally prefer to unassign the later date
-                    date_to_unassign = date2
+                    # CRITICAL: Check if either date is mandatory
+                    date1_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date1)
+                    date2_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date2)
+                    
+                    # If both are mandatory, we cannot fix this - it's a configuration error
+                    if date1_is_mandatory and date2_is_mandatory:
+                        logging.error(f"Cannot fix violation: Worker {worker_id} has mandatory assignments on both {date1} and {date2} which violate constraints. This is a configuration error.")
+                        continue
+                    
+                    # Decide which date to unassign - prioritize keeping mandatory assignments
+                    if date2_is_mandatory:
+                        date_to_unassign = date1
+                    elif date1_is_mandatory:
+                        date_to_unassign = date2
+                    else:
+                        # Neither is mandatory - prefer to unassign the later date
+                        date_to_unassign = date2
                 
                     # Find the shift number for this worker on this date
                     shift_num = None
@@ -1348,11 +1362,25 @@ class Scheduler:
                     incompatible_id = violation['incompatible_id']
                     date = violation['date']
                 
-                    # Decide which worker to unassign (prefer the one with more assignments)
-                    w1_assignments = len(self.worker_assignments.get(worker_id, set()))
-                    w2_assignments = len(self.worker_assignments.get(incompatible_id, set()))
-                
-                    worker_to_unassign = worker_id if w1_assignments >= w2_assignments else incompatible_id
+                    # CRITICAL: Check if either worker has a mandatory assignment for this date
+                    worker_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date)
+                    incompatible_is_mandatory = self.schedule_builder._is_mandatory(incompatible_id, date)
+                    
+                    # If both are mandatory, we cannot fix this - it's a configuration error
+                    if worker_is_mandatory and incompatible_is_mandatory:
+                        logging.error(f"Cannot fix incompatibility: Both workers {worker_id} and {incompatible_id} have mandatory assignments on {date} but are incompatible. This is a configuration error.")
+                        continue
+                    
+                    # Decide which worker to unassign - prioritize keeping mandatory assignments
+                    if worker_is_mandatory:
+                        worker_to_unassign = incompatible_id
+                    elif incompatible_is_mandatory:
+                        worker_to_unassign = worker_id
+                    else:
+                        # Neither is mandatory - prefer the one with more assignments
+                        w1_assignments = len(self.worker_assignments.get(worker_id, set()))
+                        w2_assignments = len(self.worker_assignments.get(incompatible_id, set()))
+                        worker_to_unassign = worker_id if w1_assignments >= w2_assignments else incompatible_id
                 
                     # Find the shift number for this worker on this date
                     shift_num = None
@@ -1827,11 +1855,27 @@ class Scheduler:
                           processed_pairs.add(pair) # Mark pair as processed
                           logging.warning(f"VALIDATION: Found incompatible workers {worker1_id} and {worker2_id} on {date}")
 
-                          # Remove one of the workers (preferably one with more assignments)
-                          w1_count = len(self.worker_assignments.get(worker1_id, set()))
-                          w2_count = len(self.worker_assignments.get(worker2_id, set()))
-
-                          worker_to_remove = worker1_id if w1_count >= w2_count else worker2_id
+                          # CRITICAL: Check if either worker has a mandatory assignment for this date
+                          worker1_is_mandatory = self.schedule_builder._is_mandatory(worker1_id, date)
+                          worker2_is_mandatory = self.schedule_builder._is_mandatory(worker2_id, date)
+                          
+                          # If both are mandatory, we have a configuration error - log it but don't remove
+                          if worker1_is_mandatory and worker2_is_mandatory:
+                              logging.error(f"VALIDATION ERROR: Both workers {worker1_id} and {worker2_id} have mandatory assignments on {date} but are incompatible. This is a configuration error that must be fixed in worker data.")
+                              continue  # Skip this fix - cannot remove mandatory assignments
+                          
+                          # If one is mandatory, remove the other one
+                          if worker1_is_mandatory:
+                              worker_to_remove = worker2_id
+                              logging.info(f"VALIDATION: Worker {worker1_id} has mandatory assignment, will remove {worker2_id}")
+                          elif worker2_is_mandatory:
+                              worker_to_remove = worker1_id
+                              logging.info(f"VALIDATION: Worker {worker2_id} has mandatory assignment, will remove {worker1_id}")
+                          else:
+                              # Neither is mandatory - remove one with more assignments
+                              w1_count = len(self.worker_assignments.get(worker1_id, set()))
+                              w2_count = len(self.worker_assignments.get(worker2_id, set()))
+                              worker_to_remove = worker1_id if w1_count >= w2_count else worker2_id
                           try:
                               # Find the post index IN THE ORIGINAL schedule[date] list
                               post_to_remove = self.schedule[date].index(worker_to_remove)
@@ -1879,16 +1923,37 @@ class Scheduler:
                     gap_issues += 1
                     logging.warning(f"VALIDATION: Found gap violation for worker {worker_id}: only {days_between} days between {date1} and {date2}, minimum required: {min_days_between}")
 
-                    # Mark the later assignment for removal
+                    # CRITICAL: Check if either date is a mandatory assignment
+                    date1_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date1)
+                    date2_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date2)
+                    
+                    # If both are mandatory, this is a configuration error - log it but don't remove
+                    if date1_is_mandatory and date2_is_mandatory:
+                        logging.error(f"VALIDATION ERROR: Worker {worker_id} has mandatory assignments on {date1} and {date2} but they violate minimum gap requirement. This is a configuration error that must be fixed in worker data.")
+                        continue  # Skip this fix - cannot remove mandatory assignments
+                    
+                    # If date1 is mandatory, try to remove date2
+                    # If date2 is mandatory, try to remove date1
+                    # If neither is mandatory, remove the later one (date2)
+                    if date2_is_mandatory:
+                        date_to_remove = date1
+                        logging.info(f"VALIDATION: {date2} is mandatory for worker {worker_id}, will try to remove {date1}")
+                    elif date1_is_mandatory:
+                        date_to_remove = date2
+                        logging.info(f"VALIDATION: {date1} is mandatory for worker {worker_id}, will try to remove {date2}")
+                    else:
+                        date_to_remove = date2  # Default: remove later assignment
+
+                    # Mark the assignment for removal
                     try:
-                         # Find post index for date2
-                         if date2 in self.schedule and worker_id in self.schedule[date2]:
-                              post_to_remove_gap = self.schedule[date2].index(worker_id)
-                              indices_to_remove_gap.append((date2, post_to_remove_gap))
+                         # Find post index for date_to_remove
+                         if date_to_remove in self.schedule and worker_id in self.schedule[date_to_remove]:
+                              post_to_remove_gap = self.schedule[date_to_remove].index(worker_id)
+                              indices_to_remove_gap.append((date_to_remove, post_to_remove_gap))
                          else:
-                              logging.error(f"VALIDATION FIX ERROR (GAP): Worker {worker_id} assignment for {date2} not found in schedule.")
+                              logging.error(f"VALIDATION FIX ERROR (GAP): Worker {worker_id} assignment for {date_to_remove} not found in schedule.")
                     except ValueError:
-                         logging.error(f"VALIDATION FIX ERROR (GAP): Worker {worker_id} not found in schedule list for {date2}.")
+                         logging.error(f"VALIDATION FIX ERROR (GAP): Worker {worker_id} not found in schedule list for {date_to_remove}.")
 
             # Now perform removals for gap violations
             for date_rem, post_rem in indices_to_remove_gap:
