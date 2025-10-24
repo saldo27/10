@@ -77,36 +77,36 @@ class AdaptiveIterationManager:
         # Base iteration calculations with enhanced logic
         if complexity < 1000:
             base_config = {
-                'main_loops': 6,
-                'fill_attempts': 4,
-                'balance_iterations': 3,
-                'weekend_passes': 3,
-                'post_adjustment_iterations': 4
-            }
-        elif complexity < 5000:
-            base_config = {
                 'main_loops': 10,
                 'fill_attempts': 8,
                 'balance_iterations': 5,
                 'weekend_passes': 5,
-                'post_adjustment_iterations': 7
+                'post_adjustment_iterations': 6
+            }
+        elif complexity < 5000:
+            base_config = {
+                'main_loops': 20,
+                'fill_attempts': 16,
+                'balance_iterations': 10,
+                'weekend_passes': 10,
+                'post_adjustment_iterations': 10
             }
         elif complexity < 15000:
             base_config = {
-                'main_loops': 25,
-                'fill_attempts': 15,
-                'balance_iterations': 18,
-                'weekend_passes': 12,
-                'post_adjustment_iterations': 9
+                'main_loops': 40,
+                'fill_attempts': 30,
+                'balance_iterations': 28,
+                'weekend_passes': 18,
+                'post_adjustment_iterations': 15
             }
         else:
             # Enhanced: Apply dynamic multipliers for complex schedules
             base_config = {
-                'main_loops': 50,
-                'fill_attempts': 20,
-                'balance_iterations': 24,
-                'weekend_passes': 20,
-                'post_adjustment_iterations': 12
+                'main_loops': 60,
+                'fill_attempts': 50,
+                'balance_iterations': 35,
+                'weekend_passes': 28,
+                'post_adjustment_iterations': 20
             }
         
         # Apply historical learning adjustments

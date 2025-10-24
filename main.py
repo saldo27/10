@@ -1535,14 +1535,6 @@ class WorkerDetailsScreen(Screen):
             active=False
         )
         
-        # Override the checkbox appearance to make it white
-        with self.incompatible_checkbox.canvas.before:
-            Color(1, 1, 1, 1)  # White background
-            self.checkbox_bg = Rectangle(pos=self.incompatible_checkbox.pos, size=self.incompatible_checkbox.size)
-        
-        # Bind to update the background position when checkbox moves
-        self.incompatible_checkbox.bind(pos=self._update_checkbox_bg, size=self._update_checkbox_bg)
-        
         checkbox_text = Label(
             text='No puede coincidir con otro incompatible',
             size_hint_x=1,
@@ -1601,12 +1593,6 @@ class WorkerDetailsScreen(Screen):
             return True
         except ValueError:
             return False
-        
-    def _update_checkbox_bg(self, instance, value):
-        """Update the checkbox background position when it moves"""
-        if hasattr(self, 'checkbox_bg'):
-            self.checkbox_bg.pos = instance.pos
-            self.checkbox_bg.size = instance.size
         
     def validate_worker_data(self):
         """Validate all worker data fields"""
@@ -2902,13 +2888,11 @@ class CalendarViewScreen(Screen):
         # Add the scroll view to the main content
         content.add_widget(scroll)
     
-        # --- Buttons (Export PDF, Export Calendar, Close) ---
+        # --- Buttons (Export PDF, Close) ---
         button_layout = BoxLayout(orientation='horizontal', size_hint_y=0.1, spacing=10)
-        pdf_button = Button(text='Export Summary PDF')
-        calendar_button = Button(text='Export Full Calendar')
+        pdf_button = Button(text='Export PDF')
         close_button = Button(text='Close')
         button_layout.add_widget(pdf_button)
-        button_layout.add_widget(calendar_button)
         button_layout.add_widget(close_button)
         content.add_widget(button_layout)
     
@@ -2945,35 +2929,8 @@ class CalendarViewScreen(Screen):
             print("DEBUG: on_close callback triggered!")
             popup.dismiss()
             print("DEBUG: Popup dismissed from on_close")
-            
-        def on_calendar(instance):
-            print("DEBUG: on_calendar callback triggered!")
-            try:
-                print("DEBUG: Generating full calendar PDF...")
-                app = App.get_running_app()
-                exporter = PDFExporter(app.schedule_config)
-                
-                calendar_filename = exporter.export_full_calendar_pdf()
-                
-                if calendar_filename:
-                    popup_msg = Popup(title='Success', 
-                                     content=Label(text=f'Full calendar exported to {calendar_filename}'),
-                                     size_hint=(None, None), size=(500, 200))
-                    popup_msg.open()
-                else:
-                    popup_msg = Popup(title='Error', 
-                                     content=Label(text='Calendar export failed.'),
-                                     size_hint=(None, None), size=(400, 200))
-                    popup_msg.open()
-            except Exception as e:
-                print(f"DEBUG: on_calendar - ERROR: {e}")
-                popup_msg = Popup(title='Error', 
-                                 content=Label(text=f'Calendar export failed: {str(e)}'),
-                                 size_hint=(None, None), size=(400, 200))
-                popup_msg.open()
     
         pdf_button.bind(on_press=on_pdf)
-        calendar_button.bind(on_press=on_calendar)
         close_button.bind(on_press=on_close)
     
         # Show the popup
@@ -3016,7 +2973,7 @@ class CalendarViewScreen(Screen):
 
     def export_summary_pdf(self, stats_data): # Renamed param
         print("DEBUG: export_summary_pdf (main.py) called!")
-        logging.info("Attempting to export GLOBAL summary PDF and full calendar...") # Changed log message
+        logging.info("Attempting to export GLOBAL summary PDF...") # Changed log message
         try:
             app = App.get_running_app()
             print("DEBUG: export_summary_pdf - Creating PDFExporter...")
@@ -3027,35 +2984,19 @@ class CalendarViewScreen(Screen):
             # The pdf_exporter method expects year, month, stats OR just stats?
             # Let's modify pdf_exporter.py to just take stats for the summary.
             filename = exporter.export_summary_pdf(stats_data) # Pass the whole stats dictionary
-            
-            # NEW: Also generate the full calendar PDF automatically
-            print("DEBUG: export_summary_pdf - Generating full calendar PDF...")
-            calendar_filename = exporter.export_full_calendar_pdf()
             # --- END CORRECTION ---
 
-            success_messages = []
             if filename: # Check if export was successful (returned filename)
-                print(f"DEBUG: export_summary_pdf - Summary export successful: {filename}")
-                success_messages.append(f'Summary exported to {filename}')
-            else:
-                print(f"DEBUG: export_summary_pdf - Summary export failed (no filename returned).")
-                
-            if calendar_filename:
-                print(f"DEBUG: export_summary_pdf - Calendar export successful: {calendar_filename}")
-                success_messages.append(f'Full calendar exported to {calendar_filename}')
-            else:
-                print(f"DEBUG: export_summary_pdf - Calendar export failed.")
-                
-            if success_messages:
-                popup = Popup(title='PDF Export Success', 
-                             content=Label(text='\n'.join(success_messages)),
-                             size_hint=(None, None), size=(500, 250))
-                popup.open()
-            else:
-                # Error should have been raised by exporter, but just in case
-                popup = Popup(title='Error', content=Label(text='PDF export failed internally.'),
+                print(f"DEBUG: export_summary_pdf - Export successful: {filename}")
+                popup = Popup(title='Success', content=Label(text=f'Summary exported to {filename}'),
                              size_hint=(None, None), size=(400, 200))
                 popup.open()
+            else:
+                 print(f"DEBUG: export_summary_pdf - Export failed (no filename returned).")
+                 # Error should have been raised by exporter, but just in case
+                 popup = Popup(title='Error', content=Label(text='PDF export failed internally.'),
+                              size_hint=(None, None), size=(400, 200))
+                 popup.open()
             pass # Placeholder
 
         except AttributeError as ae:
@@ -3201,15 +3142,6 @@ class CalendarViewScreen(Screen):
                 
         except Exception as e:
             logging.error(f"Auto export failed: {e}")
-            
-            # Check if it's a permission error and provide helpful message
-            if "Permission denied" in str(e):
-                logging.warning("PDF export failed due to file permissions. This might be because:")
-                logging.warning("1. The file is already open in another program (PDF viewer)")
-                logging.warning("2. Insufficient write permissions in the directory")
-                logging.warning("3. The file is being used by another process")
-                logging.warning("Try closing any PDF viewers and running again.")
-            
             raise e
 
     def _generate_stats_for_export(self, scheduler, config):

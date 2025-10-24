@@ -13,7 +13,6 @@ from utilities import DateTimeUtils
 from statistics import StatisticsCalculator
 from exceptions import SchedulerError
 from worker_eligibility import WorkerEligibilityTracker
-from shift_tolerance_validator import ShiftToleranceValidator
 
 # Initialize logging using the configuration module
 setup_logging()
@@ -125,8 +124,6 @@ class Scheduler:
             self.stats = StatisticsCalculator(self)
             self.constraint_checker = ConstraintChecker(self)  
             self.data_manager = DataManager(self)
-            # Initialize shift tolerance validator for +/-9% validation
-            self.tolerance_validator = ShiftToleranceValidator(self)
             # self.schedule_builder will be initialized later in generate_schedule
             self.eligibility_tracker = WorkerEligibilityTracker(
                 self.workers_data,
@@ -419,36 +416,21 @@ class Scheduler:
                 
                 for post_idx, worker_id in enumerate(shifts):
                     if worker_id is not None:
-                        # Update worker assignments - initialize if needed
-                        if worker_id not in self.worker_assignments:
-                            self.worker_assignments[worker_id] = set()
+                        # Update worker assignments
                         self.worker_assignments[worker_id].add(date)
                     
-                        # Update posts worked - with robust protection
-                        if worker_id not in self.worker_posts:
-                            self.worker_posts[worker_id] = set()
-                        elif not isinstance(self.worker_posts[worker_id], set):
-                            logging.debug(f"Auto-correcting worker_posts[{worker_id}] type from {type(self.worker_posts[worker_id])} to set")
-                            self.worker_posts[worker_id] = set()
+                        # Update posts worked
                         self.worker_posts[worker_id].add(post_idx)
                     
-                        # Update weekday counts - initialize if needed
-                        if worker_id not in self.worker_weekdays:
-                            self.worker_weekdays[worker_id] = {day: 0 for day in range(7)}
+                        # Update weekday counts
                         self.worker_weekdays[worker_id][weekday] += 1
                     
-                        # Update weekends/holidays efficiently - initialize if needed
+                        # Update weekends/holidays efficiently
                         if is_weekend_or_holiday:
-                            if worker_id not in self.worker_weekends:
-                                self.worker_weekends[worker_id] = []
-                            if worker_id not in self.worker_weekend_counts:
-                                self.worker_weekend_counts[worker_id] = 0
                             self.worker_weekends[worker_id].append(date)
                             self.worker_weekend_counts[worker_id] += 1
                     
-                        # Update shift counts - initialize if needed
-                        if worker_id not in self.worker_shift_counts:
-                            self.worker_shift_counts[worker_id] = 0
+                        # Update shift counts
                         self.worker_shift_counts[worker_id] += 1
         
             # Sort weekend dates for consistency (batch operation)
@@ -650,7 +632,7 @@ class Scheduler:
             # Robust check and initialization for self.worker_posts[worker_id]
             # Ensures it's a set even if worker_id was already a key but with a wrong type (e.g., dict)
             if worker_id not in self.worker_posts or not isinstance(self.worker_posts.get(worker_id), set):
-                logging.debug(f"Auto-correcting worker_posts[{worker_id}] to set (was {type(self.worker_posts.get(worker_id, None))})")
+                logging.warning(f"Re-initializing self.worker_posts[{worker_id}] as a set due to incorrect type.") # Optional: log this
                 self.worker_posts[worker_id] = set() 
             
             if worker_id not in self.worker_weekdays: 
@@ -1080,6 +1062,145 @@ class Scheduler:
         except Exception as e:
             logging.error(f"Error in Scheduler._is_allowed_assignment for worker {worker_id} on {date}: {str(e)}", exc_info=True)
             return False
+        
+    def _assign_workers_simple(self):
+        """
+        Simple method to directly assign workers to shifts based on targets and ensuring
+        all constraints are properly respected:
+        - Special Friday-Monday constraint
+        - 7/14 day pattern avoidance
+        - Worker incompatibility checking
+        """
+        logging.info("Using simplified assignment method to ensure schedule population")
+    
+        # 1. Get all dates that need to be scheduled
+        all_dates = sorted(list(self.schedule.keys()))
+        if not all_dates:
+            all_dates = self._get_date_range(self.start_date, self.end_date)
+    
+        # 2. Prepare worker assignments based on target shifts
+        worker_assignment_counts = {w['id']: 0 for w in self.workers_data}
+        worker_targets = {w['id']: w.get('target_shifts', 1) for w in self.workers_data}
+    
+        # Sort workers by targets (highest first) to prioritize those who need more shifts
+        workers_by_priority = sorted(
+            self.workers_data, 
+            key=lambda w: worker_targets.get(w['id'], 0),
+            reverse=True
+        )    
+    
+        # 3. Go through each date and assign workers
+        for date in all_dates:
+            # For each shift on this date
+            for post in range(self.num_shifts):
+                # If the shift is already assigned, skip it
+                if date in self.schedule and len(self.schedule[date]) > post and self.schedule[date][post] is not None:
+                    continue
+            
+                # Find the best worker for this shift
+                best_worker = None
+            
+                # Get currently assigned workers for this date
+                currently_assigned = []
+                if date in self.schedule:
+                    currently_assigned = [w for w in self.schedule[date] if w is not None]
+    
+                # Try each worker in priority order
+                for worker in workers_by_priority:
+                    worker_id = worker['id']
+
+                    # Skip if worker is already assigned to this date
+                    if worker_id in currently_assigned:
+                        continue
+    
+                    # Skip if worker has reached their target
+                    if worker_assignment_counts[worker_id] >= worker_targets[worker_id]:
+                        continue
+    
+                    # Initialize too_close flag
+                    too_close = False
+    
+                    # Inside the loop where we check minimum gap
+                    for assigned_date in self.worker_assignments.get(worker_id, set()):
+                        days_difference = abs((date - assigned_date).days)
+    
+                        # We need at least gap_between_shifts days off, so (gap+1)+ days between assignments
+                        min_days_between = self.gap_between_shifts + 1
+                        if days_difference < min_days_between:
+                            too_close = True
+                            break
+    
+                        # Special case: Friday-Monday (needs 3 days off, so 4+ days between)
+                        if days_difference == 3:
+                            if ((date.weekday() == 0 and assigned_date.weekday() == 4) or 
+                                (date.weekday() == 4 and assigned_date.weekday() == 0)):
+                                too_close = True
+                                break
+    
+                        # Check for weekly-pattern (7 or 14 days, same weekday)
+                        if self._is_weekly_pattern(days_difference) and date.weekday() == assigned_date.weekday():
+                            too_close = True
+    
+                    if too_close:
+                        continue
+                    
+                    # Check for worker incompatibilities
+                    incompatible_with = worker.get('incompatible_with', [])
+                    if incompatible_with:
+                        has_conflict = False
+                        for incompatible_id in incompatible_with:
+                            if incompatible_id in currently_assigned:
+                                has_conflict = True
+                                break
+
+                        if has_conflict:
+                            continue
+                
+                    # This worker is a good candidate
+                    best_worker = worker
+                    break
+            
+                # If we found a suitable worker, assign them
+                if best_worker:
+                    worker_id = best_worker['id']
+            
+                    # Make sure the schedule list exists and has the right size
+                    if date not in self.schedule:
+                        self.schedule[date] = []
+                
+                    while len(self.schedule[date]) <= post:
+                        self.schedule[date].append(None)
+                
+                    # Assign the worker
+                    self.schedule[date][post] = worker_id
+            
+                    # Update tracking data
+                    self._update_tracking_data(worker_id, date, post)
+            
+                    # Update the assignment count
+                    worker_assignment_counts[worker_id] += 1
+                
+                    # Update currently_assigned for this date
+                    currently_assigned.append(worker_id)
+            
+                    # Log the assignment
+                    logging.info(f"Assigned worker {worker_id} to {date.strftime('%d-%m-%Y')}, post {post}")
+                else:
+                    # No suitable worker found, leave unassigned
+                    if date not in self.schedule:
+                        self.schedule[date] = []
+                
+                    while len(self.schedule[date]) <= post:
+                        self.schedule[date].append(None)
+                    
+                    logging.debug(f"No suitable worker found for {date.strftime('%d-%m-%Y')}, post {post}")
+    
+        # 4. Return the number of assignments made
+        total_assigned = sum(worker_assignment_counts.values())
+        total_shifts = len(all_dates) * self.num_shifts
+        logging.info(f"Simple assignment complete: {total_assigned}/{total_shifts} shifts assigned ({total_assigned/total_shifts*100:.1f}%)")
+    
+        return total_assigned > 0
         
     def _check_schedule_constraints(self):
         """
@@ -2044,34 +2165,6 @@ class Scheduler:
             worker = eligible_workers[i % len(eligible_workers)]
             worker['target_shifts'] += 1
             logging.info(f"Redistributed 1 shift to worker {worker['id']}")
-
-    def is_mandatory_shift(self, worker_id: str, date: datetime) -> bool:
-        """
-        Check if a shift is mandatory for a given worker on a specific date.
-        This method is used by optimization components to ensure mandatory shifts
-        are never modified, removed, or redistributed.
-        
-        Args:
-            worker_id: Worker identifier
-            date: Date to check
-            
-        Returns:
-            bool: True if the shift is mandatory for this worker on this date
-        """
-        worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
-        if not worker:
-            return False
-            
-        mandatory_days_str = worker.get('mandatory_days', '')
-        if not mandatory_days_str:
-            return False
-            
-        try:
-            mandatory_dates = self.date_utils.parse_dates(mandatory_days_str)
-            return date in mandatory_dates
-        except Exception as e:
-            logging.error(f"Error parsing mandatory_days for worker {worker_id}: {e}")
-            return False
 
     # ========================================
     # 11. REAL-TIME OPERATIONS

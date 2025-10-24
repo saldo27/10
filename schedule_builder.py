@@ -7,7 +7,6 @@ import math
 from typing import Dict, List, Set, Optional, Tuple, Any, TYPE_CHECKING
 from exceptions import SchedulerError
 from adaptive_iterations import AdaptiveIterationManager
-from dynamic_priority_manager import DynamicPriorityManager, PriorityWeights
 
 if TYPE_CHECKING:
     from scheduler import Scheduler
@@ -62,14 +61,6 @@ class ScheduleBuilder:
         self.iteration_manager = AdaptiveIterationManager(scheduler)
         self.adaptive_config = self.iteration_manager.calculate_adaptive_iterations()
         logging.info(f"Adaptive config: {self.adaptive_config}")
-        
-        # Initialize dynamic priority manager
-        self.priority_manager = DynamicPriorityManager(scheduler)
-        self.current_weights = self.priority_manager.base_weights
-        
-        # Initialize backtracking manager
-        from backtracking_manager import BacktrackingManager
-        self.backtracking_manager = BacktrackingManager(scheduler, max_checkpoints=20)
         
         # Build performance caches
         self._build_optimization_caches()
@@ -379,15 +370,17 @@ class ScheduleBuilder:
                     # Check for 7-14 day pattern (same weekday in consecutive weeks)
                     # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
                     # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
-                    # CRITICAL: This constraint is ABSOLUTE - no overrides allowed
+                    # OVERRIDE: If worker has high target_shifts deficit, allow pattern violation
                     if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
                         # Allow weekend days to be assigned on same weekday 7/14 days apart
                         if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
                             continue  # Skip this constraint for weekend days
                         
-                        # REMOVED: No overrides allowed - this constraint is absolute
-                        # Pattern 7/14 days must ALWAYS be respected for weekdays
-                        logging.debug(f"ScheduleBuilder: Worker {worker_id} blocked by 7/14 day pattern: {date.strftime('%Y-%m-%d')} vs {prev_date.strftime('%Y-%m-%d')}")
+                        # NEW: If worker has high deficit, allow pattern violation
+                        if high_deficit:
+                            logging.debug(f"ScheduleBuilder: Worker {worker_id} 7/14 pattern override due to high deficit ({target_deficit})")
+                            continue
+                            
                         return False
             
             # Special case: Friday-Monday check if gap is only 1 day
@@ -855,27 +848,27 @@ class ScheduleBuilder:
             # CRITICAL FIX: Add 7/14 day pattern check (same weekday constraint)
             # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
             # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
-            # CRITICAL: This constraint is ABSOLUTE - no overrides allowed
+            # OVERRIDE: If worker has high target_shifts deficit, relax this constraint
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
                 # Allow weekend days to be assigned on same weekday 7/14 days apart
                 if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
                     continue  # Skip this constraint for weekend days
                 
-                # REMOVED: No overrides allowed - this constraint is absolute
-                # Pattern 7/14 days must ALWAYS be respected for weekdays
+                # NEW: If worker has high deficit and relaxation_level > 0, allow pattern violation
+                if high_deficit and relaxation_level > 0:
+                    logging.debug(f"ScheduleBuilder: Worker {worker_id} 7/14 pattern override due to high deficit ({target_deficit})")
+                    continue
+                    
                 logging.debug(f"ScheduleBuilder: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}")
                 return False
         
         return True
 
     def _calculate_target_shift_score(self, worker, mandatory_dates, relaxation_level):
-        """Calculate score based on target shifts and mandatory assignments with dynamic weights"""
+        """Calculate score based on target shifts and mandatory assignments"""
         worker_id = worker['id']
         current_shifts = len(self.worker_assignments[worker_id])
         target_shifts = worker.get('target_shifts', 0)
-        
-        # Get current dynamic weights
-        weights = self.current_weights
         
         # Count mandatory shifts that are already assigned
         mandatory_shifts_assigned = sum(
@@ -900,25 +893,18 @@ class ScheduleBuilder:
             and relaxation_level < 2):
             return float('-inf')
         
-        # Calculate score based on shift difference with dynamic weights
+        # Calculate score based on shift difference
         score = 0
         if shift_difference <= 0:
-            # Apply dynamic excess penalty
-            penalty_weight = weights.target_excess_penalty
-            
-            # Adjust penalty based on relaxation level
             if relaxation_level == 0:
-                penalty_multiplier = 4.0
+                score -= 8000 * abs(shift_difference)  # Heavy penalty, not impossible
             elif relaxation_level == 1:
-                penalty_multiplier = 2.5
+                score -= 5000 * abs(shift_difference)  # Moderate penalty
             else:
-                penalty_multiplier = 1.0
-            
-            score += penalty_weight * penalty_multiplier * abs(shift_difference)
+                score -= 2000 * abs(shift_difference)  # Light penalty at high relaxation
         else:
-            # Prioritize workers who are furthest below target using dynamic weight
-            deficit_weight = weights.target_deficit_weight * weights.coverage_urgency_multiplier
-            score += shift_difference * deficit_weight
+            # Prioritize workers who are furthest below target
+            score += shift_difference * 2000
             
         return score
 
@@ -989,22 +975,17 @@ class ScheduleBuilder:
             return float('-inf')
     
     def _calculate_additional_scoring_factors(self, worker, date, relaxation_level):
-        """Calculate additional scoring factors like weekend balance and weekly distribution with dynamic weights"""
+        """Calculate additional scoring factors like weekend balance and weekly distribution"""
         worker_id = worker['id']
         score = 0
         
-        # Get current dynamic weights
-        weights = self.current_weights
-        
-        # Weekend Balance Score with dynamic weight
+        # Weekend Balance Score
         if self._is_weekend_or_holiday(date):
             special_day_assignments = sum(
                 1 for d in self.worker_assignments[worker_id]
                 if self._is_weekend_or_holiday(d)
             )
-            # Apply dynamic weekend balance penalty
-            weekend_penalty = weights.weekend_balance_penalty * weights.balance_urgency_multiplier
-            score += weekend_penalty * special_day_assignments
+            score -= special_day_assignments * 300 
 
         # Weekly Balance Score - avoid concentration in some weeks
         week_number = date.isocalendar()[1]
@@ -1018,20 +999,17 @@ class ScheduleBuilder:
         avg_week_count = len(assignments) / max(1, len(week_counts)) if week_counts else 0
 
         if current_week_count < avg_week_count:
-            # Apply dynamic weekly balance bonus
-            weekly_bonus = weights.weekly_balance_bonus * weights.balance_urgency_multiplier
-            score += weekly_bonus
+            score += 500  # Bonus for weeks with fewer assignments
 
         # Schedule Progression Score - adjust priority as schedule fills up
         total_days = (self.end_date - self.start_date).days if self.end_date > self.start_date else 1
         schedule_completion = sum(len(s) for s in self.schedule.values()) / (total_days * self.num_shifts)
 
-        # Additional progression bonus with dynamic weight
+        # Additional progression bonus
         current_shifts = len(self.worker_assignments[worker_id])
         target_shifts = worker.get('target_shifts', 0)
         shift_difference = target_shifts - current_shifts
-        progression_bonus = weights.progression_bonus * weights.coverage_urgency_multiplier
-        score += shift_difference * progression_bonus * schedule_completion
+        score += shift_difference * 500 * schedule_completion
 
         return score
 
@@ -1132,45 +1110,6 @@ class ScheduleBuilder:
     # ========================================
     # 6. SCHEDULE GENERATION METHODS
     # ========================================
-    
-    def update_dynamic_priorities(self) -> None:
-        """
-        Update scoring weights based on current schedule progress.
-        Should be called periodically during schedule generation.
-        """
-        # Analyze current progress
-        progress = self.priority_manager.analyze_progress()
-        
-        # Adjust weights based on progress
-        self.current_weights = self.priority_manager.adjust_weights(progress)
-        
-        logging.debug(f"Dynamic priorities updated for {progress.phase} phase "
-                     f"({progress.coverage_percentage:.1f}% coverage)")
-    
-    def create_checkpoint(self, phase: str, iteration: int, description: str = "", reason: str = "manual") -> str:
-        """
-        Create a checkpoint for potential backtracking.
-        
-        Args:
-            phase: Current phase ('mandatory', 'improvement', 'finalization')
-            iteration: Current iteration number
-            description: Human-readable description
-            reason: Why checkpoint is being created
-            
-        Returns:
-            checkpoint_id: Unique identifier for the checkpoint
-        """
-        return self.backtracking_manager.create_checkpoint(phase, iteration, description, reason)
-    
-    def attempt_recovery_if_stuck(self) -> bool:
-        """
-        Check if stuck in dead-end and attempt recovery.
-        
-        Returns:
-            bool: True if recovery was performed
-        """
-        return self.backtracking_manager.auto_recovery()
-    
     def _assign_mandatory_guards(self):
         logging.info("Starting mandatory guard assignment…")
         assigned_count = 0
@@ -1202,11 +1141,6 @@ class ScheduleBuilder:
                             continue
                         
                         # CRITICAL FIX: Add comprehensive constraint check for mandatory assignments
-                        # CRITICAL: Validate 7/14 constraints before mandatory assignment
-                        if not self._validate_7_14_constraints(worker_id, date, post):
-                            logging.debug(f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} post {post} violates 7/14 day constraints. Trying next post.")
-                            continue
-                            
                         if not self._can_assign_worker(worker_id, date, post):
                             logging.debug(f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} post {post} violates constraints. Trying next post.")
                             continue
@@ -1317,11 +1251,6 @@ class ScheduleBuilder:
                         # Double check slot is still None before assigning (paranoid check)
                         if self.schedule[date][post] is None:
                             # CRITICAL FIX: Add comprehensive constraint check before assignment
-                            # CRITICAL: Check 7/14 day patterns before assignment 
-                            if not self._validate_7_14_constraints(worker_id, date, post):
-                                logging.debug(f"  Assignment REJECTED (7/14 Day Pattern): W:{worker_id} for {date.strftime('%Y-%m-%d')} P:{post}")
-                                continue  # Try next candidate
-                                
                             if not self._can_assign_worker(worker_id, date, post):
                                 logging.debug(f"  Assignment REJECTED (Constraint Check): W:{worker_id} for {date.strftime('%Y-%m-%d')} P:{post}")
                                 continue  # Try next candidate
@@ -1364,91 +1293,8 @@ class ScheduleBuilder:
         while len(self.schedule.get(date, [])) < self.num_shifts:
              self.schedule.setdefault(date, []).append(None) # Use setdefault for safety if date somehow disappeared
         
-    def _validate_7_14_constraints(self, worker_id, date, post):
-        """
-        CRITICAL: Central validation for 7/14 day patterns and constraints
-        This must be called before ANY assignment to prevent violations
-        """
-        # Convert date to string format if needed
-        date_str = date if isinstance(date, str) else date.strftime('%Y-%m-%d')
-        date_obj = datetime.strptime(date_str, '%Y-%m-%d') if isinstance(date, str) else date
-        
-        # Find worker data for constraint checking
-        worker_data = None
-        for w in self.workers_data:
-            if str(w.get('id', '')) == str(worker_id):
-                worker_data = w
-                break
-        
-        if not worker_data:
-            logging.warning(f"Worker data not found for {worker_id} during 7/14 validation")
-            return False
-        
-        # CRITICAL: Check 7/14 day pattern violations against CURRENT schedule
-        current_weekday = date_obj.weekday()
-        
-        # Check all existing assignments for this worker
-        for schedule_date_str, day_assignments in self.schedule.items():
-            if worker_id in day_assignments:
-                try:
-                    # Handle both string and datetime objects for schedule keys
-                    if isinstance(schedule_date_str, str):
-                        existing_date = datetime.strptime(schedule_date_str, '%Y-%m-%d')
-                    elif isinstance(schedule_date_str, datetime):
-                        existing_date = schedule_date_str
-                    else:
-                        continue  # Skip if neither string nor datetime
-                        
-                    existing_weekday = existing_date.weekday()
-                    
-                    # Same weekday check
-                    if current_weekday == existing_weekday:
-                        days_diff = abs((date_obj - existing_date).days)
-                        
-                        # Block if exactly 7 or 14 days apart
-                        if days_diff == 7:
-                            logging.warning(f"BLOCKED: Worker {worker_id} 7-day violation: {date_str} vs {existing_date.strftime('%Y-%m-%d')} (both {date_obj.strftime('%A')})")
-                            return False
-                        elif days_diff == 14:
-                            logging.warning(f"BLOCKED: Worker {worker_id} 14-day violation: {date_str} vs {existing_date.strftime('%Y-%m-%d')} (both {date_obj.strftime('%A')})")
-                            return False
-                            
-                except (ValueError, TypeError):
-                    continue
-        
-        # Also check against worker assignments tracking
-        worker_assignments = self.scheduler.worker_assignments.get(worker_id, set())
-        for assigned_date in worker_assignments:
-            try:
-                # Handle both string and datetime objects for assigned dates
-                if isinstance(assigned_date, datetime):
-                    assigned_date_obj = assigned_date
-                elif isinstance(assigned_date, str):
-                    assigned_date_obj = datetime.strptime(assigned_date, '%Y-%m-%d')
-                else:
-                    continue  # Skip if neither string nor datetime
-                    
-                assigned_weekday = assigned_date_obj.weekday()
-                
-                # Same weekday check  
-                if current_weekday == assigned_weekday:
-                    days_diff = abs((date_obj - assigned_date_obj).days)
-                    
-                    # Block if exactly 7 or 14 days apart
-                    if days_diff == 7:
-                        logging.warning(f"BLOCKED: Worker {worker_id} 7-day violation: {date_str} vs {assigned_date_obj.strftime('%Y-%m-%d')} (both {date_obj.strftime('%A')})")
-                        return False
-                    elif days_diff == 14:
-                        logging.warning(f"BLOCKED: Worker {worker_id} 14-day violation: {date_str} vs {assigned_date_obj.strftime('%Y-%m-%d')} (both {date_obj.strftime('%A')})")
-                        return False
-                        
-            except (ValueError, AttributeError, TypeError):
-                continue
-        
-        return True
-
     def assign_worker_to_shift(self, worker_id, date, post):
-        """Assign a worker to a shift with proper incompatibility and constraint checking"""
+        """Assign a worker to a shift with proper incompatibility checking"""
     
         # Check if the date already exists in the schedule
         if date not in self.schedule:
@@ -1459,90 +1305,11 @@ class ScheduleBuilder:
         if not self._check_incompatibility_with_list(worker_id, already_assigned):
             logging.warning(f"Cannot assign worker {worker_id} due to incompatibility on {date}")
             return False
-            
-        # CRITICAL: Check 7/14 day pattern constraints BEFORE assignment
-        if not self._validate_7_14_constraints(worker_id, date, post):
-            return False
         
-        # Proceed with assignment if all constraints are satisfied
+        # Proceed with assignment if no incompatibility
         self.schedule[date][post] = worker_id
         self.scheduler._update_tracking_data(worker_id, date, post) # Corrected: self.scheduler._update_tracking_data
         return True
-    
-    def _should_prioritize_worker_for_tolerance(self, worker_id: str, is_weekend_shift: bool = False) -> int:
-        """
-        Determina la prioridad de un trabajador basada en su desviación del target_shifts
-        
-        Args:
-            worker_id: ID del trabajador
-            is_weekend_shift: Si es un shift de weekend
-            
-        Returns:
-            int: Prioridad (mayor = más prioritario). 0 si no necesita priorización
-        """
-        try:
-            validation = self.scheduler.tolerance_validator.validate_worker_shift_count(
-                worker_id, is_weekend_only=is_weekend_shift
-            )
-            
-            if not validation or validation.get('error'):
-                return 0
-                
-            target = validation['target_shifts']
-            assigned = validation['assigned_shifts']
-            min_allowed = validation['min_allowed']
-            max_allowed = validation['max_allowed']
-            
-            # Si está por debajo del mínimo, alta prioridad
-            if assigned < min_allowed:
-                deficit = min_allowed - assigned
-                return 100 + deficit * 10  # Más déficit = más prioridad
-            
-            # Si está dentro del rango pero cerca del mínimo, prioridad media
-            elif assigned <= target:
-                return 50 + (target - assigned) * 5
-            
-            # Si está por encima del target pero dentro del máximo, baja prioridad
-            elif assigned < max_allowed:
-                return 20 - (assigned - target) * 2
-            
-            # Si está por encima del máximo, no asignar (prioridad negativa)
-            else:
-                return -100
-                
-        except Exception as e:
-            logging.error(f"Error calculating worker priority for {worker_id}: {e}")
-            return 0
-    
-    def _get_workers_prioritized_for_shift(self, date, post, is_weekend_shift: bool = False) -> List[str]:
-        """
-        Obtiene una lista de trabajadores priorizados para un shift específico
-        
-        Args:
-            date: Fecha del shift
-            post: Puesto del shift
-            is_weekend_shift: Si es un shift de weekend
-            
-        Returns:
-            List[str]: Lista de worker_ids ordenados por prioridad
-        """
-        eligible_workers = []
-        
-        for worker in self.workers_data:
-            worker_id = worker['id']
-            
-            # Verificar si el trabajador puede ser asignado
-            if self._can_assign_worker(worker_id, date, post):
-                priority = self._should_prioritize_worker_for_tolerance(worker_id, is_weekend_shift)
-                
-                # Solo incluir trabajadores con prioridad positiva o cero
-                if priority >= 0:
-                    eligible_workers.append((worker_id, priority))
-        
-        # Ordenar por prioridad (mayor prioridad primero)
-        eligible_workers.sort(key=lambda x: x[1], reverse=True)
-        
-        return [worker_id for worker_id, _ in eligible_workers]
         
     # ========================================
     # 7. SCHEDULE IMPROVEMENT METHODS
@@ -1588,28 +1355,23 @@ class ScheduleBuilder:
                 pass1_candidates = []
                 logging.debug(f"  [Pass 1 Attempt] Date: {date_val.strftime('%Y-%m-%d')}, Post: {post_val}, Relaxation Level: {relax_lvl_attempt}")
 
-                # Use tolerance-based prioritization for worker selection
-                is_weekend_shift = self._is_weekend_or_holiday_cached(date_val)
-                prioritized_workers = self._get_workers_prioritized_for_shift(date_val, post_val, is_weekend_shift)
-                
-                for worker_id_val in prioritized_workers:
-                    worker_data_val = next((w for w in self.workers_data if w['id'] == worker_id_val), None)
-                    if not worker_data_val:
-                        continue
-                        
+                for worker_data_val in self.workers_data:
+                    worker_id_val = worker_data_val['id']
                     logging.debug(f"    [Pass 1 Candidate Check] Worker: {worker_id_val} for Date: {date_val.strftime('%Y-%m-%d')}, Post: {post_val}, Relax: {relax_lvl_attempt}")
                     
                     score = self._calculate_worker_score(worker_data_val, date_val, post_val, relaxation_level=relax_lvl_attempt)
 
                     if score > float('-inf'):
-                        # Get tolerance-based priority 
-                        tolerance_priority = self._should_prioritize_worker_for_tolerance(worker_id_val, is_weekend_shift)
+                        # Add target_shifts priority bonus to base score
+                        current_assignments = len(self.worker_assignments.get(worker_id_val, set()))
+                        target_shifts = worker_data_val.get('target_shifts', 0)
+                        target_deficit = max(0, target_shifts - current_assignments)
                         
-                        # Combine base score with tolerance priority
-                        priority_score = score + (tolerance_priority * 10)  # Weight tolerance priority
+                        # Combine base score with target_shifts priority
+                        priority_score = score + (target_deficit * 1000)  # Slightly lower bonus than swaps
                         
                         logging.debug(f"      -> Pass1 ACCEPTED as candidate: Worker {worker_id_val} with base_score={score}, "
-                                    f"tolerance_priority={tolerance_priority}, priority_score={priority_score} at relax {relax_lvl_attempt}")
+                                    f"target_deficit={target_deficit}, priority_score={priority_score} at relax {relax_lvl_attempt}")
                         pass1_candidates.append((worker_data_val, priority_score))
                     else:
                         logging.debug(f"      -> Pass1 REJECTED (Score Check): Worker {worker_id_val} at relax {relax_lvl_attempt}")
@@ -1624,10 +1386,7 @@ class ScheduleBuilder:
                     
                     if self.schedule[date_val][post_val] is None: 
                         others_now = [w for i, w in enumerate(self.schedule.get(date_val, [])) if i != post_val and w is not None]
-                        # CRITICAL FIX: Add 7/14 day validation before assignment
-                        if not self._validate_7_14_constraints(worker_id_to_assign, date_val, post_val):
-                            logging.debug(f"      -> Pass1 Assignment REJECTED (7/14 Day Pattern): W:{worker_id_to_assign} for {date_val.strftime('%Y-%m-%d')} P:{post_val} at Relax {relax_lvl_attempt}")
-                        elif not self._check_incompatibility_with_list(worker_id_to_assign, others_now):
+                        if not self._check_incompatibility_with_list(worker_id_to_assign, others_now):
                             logging.debug(f"      -> Pass1 Assignment REJECTED (Last Minute Incompat): W:{worker_id_to_assign} for {date_val.strftime('%Y-%m-%d')} P:{post_val} at Relax {relax_lvl_attempt}")
                         # CRITICAL FIX: Add comprehensive constraint check before assignment
                         elif not self._can_assign_worker(worker_id_to_assign, date_val, post_val):
@@ -1707,14 +1466,6 @@ class ScheduleBuilder:
 
                         if worker_X_id:
                             logging.info(f"[Pass 2 Swap Attempt] W:{worker_W_id} ({date_conflict.strftime('%Y-%m-%d')},P{post_conflict}) -> ({date_empty.strftime('%Y-%m-%d')},P{post_empty}); X:{worker_X_id} takes W's original spot.")
-                            
-                            # CRITICAL: Validate 7/14 constraints before swaps
-                            if not self._validate_7_14_constraints(worker_X_id, date_conflict, post_conflict):
-                                logging.debug(f"Swap REJECTED: Worker X {worker_X_id} violates 7/14 constraints for {date_conflict.strftime('%Y-%m-%d')} P{post_conflict}")
-                                continue
-                            if not self._validate_7_14_constraints(worker_W_id, date_empty, post_empty):
-                                logging.debug(f"Swap REJECTED: Worker W {worker_W_id} violates 7/14 constraints for {date_empty.strftime('%Y-%m-%d')} P{post_empty}")
-                                continue
                             
                             # 1. Remove W from original spot
                             self.schedule[date_conflict][post_conflict] = None
@@ -1909,9 +1660,6 @@ class ScheduleBuilder:
                 reassigned = False
                 for under_worker_id, _ in underloaded:
                     # ... (check if under_worker already assigned) ...
-                    # CRITICAL: Validate 7/14 constraints before workload balance reassignment
-                    if not self._validate_7_14_constraints(under_worker_id, date_val, post_val):
-                        continue
                     if self._can_assign_worker(under_worker_id, date_val, post_val):
                         # remove only if it wasn't locked mandatory
                         if (over_worker_id, date_val) in self._locked_mandatory:
@@ -2059,9 +1807,6 @@ class ScheduleBuilder:
                     if other_weekday_counts[weekday] >= other_avg + 2:
                         continue
                     
-                    # CRITICAL: Validate 7/14 constraints for weekday balancing
-                    if not self._validate_7_14_constraints(other_worker_id, date, post):
-                        continue
                     # Check if other worker can take this shift
                     if self._can_assign_worker(other_worker_id, date, post):
                         # Remove from original worker
@@ -2418,9 +2163,6 @@ class ScheduleBuilder:
 
                         # _can_assign_worker MUST use the same consistent definition of special day for its internal checks
                         # (especially its call to _would_exceed_weekend_limit)
-                        # CRITICAL: Validate 7/14 constraints for special day reassignments
-                        if not self._validate_7_14_constraints(under_worker_id, special_day_to_reassign, post_val):
-                            continue
                         if self._can_assign_worker(under_worker_id, special_day_to_reassign, post_val):
                             # Perform the assignment change
                             self.scheduler.schedule[special_day_to_reassign][post_val] = under_worker_id
@@ -3641,9 +3383,6 @@ class ScheduleBuilder:
                     
                     # Calculate worker_weekend_counts
                     if is_weekend_or_holiday:
-                        # Initialize if not present (handles both int and str worker_ids)
-                        if worker_id not in worker_weekend_counts:
-                            worker_weekend_counts[worker_id] = 0
                         worker_weekend_counts[worker_id] += 1
 
         # Calculate last assignment dates
