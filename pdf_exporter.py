@@ -253,6 +253,139 @@ class PDFExporter:
         doc.build(story)
         return filename
 
+    def export_all_months_calendar(self, filename=None):
+        """
+        Export ALL months in the schedule period to PDF in landscape A4 format.
+        Each month gets its own page.
+        """
+        # Determine the date range from the schedule
+        if not self.schedule:
+            logging.warning("No schedule data available for PDF export")
+            return None
+            
+        schedule_dates = sorted(self.schedule.keys())
+        start_date = schedule_dates[0]
+        end_date = schedule_dates[-1]
+        
+        # Generate filename with period
+        if not filename:
+            period_str = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+            filename = f'schedule_all_months_{period_str}.pdf'
+        
+        try:
+            # Create PDF document in LANDSCAPE A4 format
+            doc = SimpleDocTemplate(
+                filename,
+                pagesize=landscape(A4),
+                rightMargin=30,
+                leftMargin=30,
+                topMargin=30,
+                bottomMargin=30
+            )
+            
+            story = []
+            
+            # Generate a page for each month in the period
+            current_date = datetime(start_date.year, start_date.month, 1)
+            end_month = datetime(end_date.year, end_date.month, 1)
+            
+            first_month = True
+            while current_date <= end_month:
+                # Add page break between months (except for first month)
+                if not first_month:
+                    from reportlab.platypus import PageBreak
+                    story.append(PageBreak())
+                first_month = False
+                
+                # Add title for this month
+                title_style = ParagraphStyle(
+                    'MonthTitle',
+                    parent=self.styles['Heading1'],
+                    fontSize=16,
+                    spaceAfter=20,
+                    alignment=1  # Center alignment
+                )
+                month_title = Paragraph(
+                    f"Schedule for {current_date.strftime('%B %Y')}",
+                    title_style
+                )
+                story.append(month_title)
+                story.append(Spacer(1, 0.3*cm))
+                
+                # Create calendar data for this month
+                cal = monthcalendar(current_date.year, current_date.month)
+                calendar_data = [['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']]
+                
+                for week in cal:
+                    week_data = []
+                    for day in week:
+                        if day == 0:
+                            cell_content = ''
+                        else:
+                            date = datetime(current_date.year, current_date.month, day)
+                            cell_lines = [f'<b>{day}</b>']
+                            
+                            # Add scheduled workers
+                            if date in self.schedule:
+                                for i, worker_id in enumerate(self.schedule[date]):
+                                    if worker_id is not None:
+                                        cell_lines.append(f'Post {i+1}: {worker_id}')
+                            
+                            # Mark holidays
+                            if date in self.holidays_set:
+                                cell_lines.append('<i><font color="red">HOLIDAY</font></i>')
+                            
+                            # Join with line breaks
+                            cell_content = Paragraph('<br/>'.join(cell_lines), self.styles['SmallNormal'])
+                        
+                        week_data.append(cell_content)
+                    calendar_data.append(week_data)
+                
+                # Create table with appropriate column widths for landscape A4
+                # Landscape A4 width ≈ 27.7 cm, minus margins (2x3cm) = 21.7 cm
+                col_width = (landscape(A4)[0] - 60) / 7  # Divide available width by 7 days
+                
+                table = Table(
+                    calendar_data, 
+                    colWidths=[col_width] * 7,
+                    rowHeights=[0.5*cm] + [2.5*cm] * len(cal)  # Header + weeks
+                )
+                
+                # Style the table
+                style = TableStyle([
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                    ('TOPPADDING', (0, 1), (-1, -1), 5),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 5),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+                    # Highlight weekends (Saturday and Sunday are columns 5 and 6)
+                    ('BACKGROUND', (5, 1), (6, -1), colors.Color(0.95, 0.95, 0.95)),
+                ])
+                table.setStyle(style)
+                
+                story.append(table)
+                
+                # Move to next month
+                if current_date.month == 12:
+                    current_date = datetime(current_date.year + 1, 1, 1)
+                else:
+                    current_date = datetime(current_date.year, current_date.month + 1, 1)
+            
+            # Build the PDF
+            doc.build(story)
+            logging.info(f"Successfully created multi-month calendar PDF: {filename}")
+            return filename
+            
+        except Exception as e:
+            logging.error(f"Failed to export multi-month calendar PDF: {str(e)}", exc_info=True)
+            raise
+
     @time_function
     @monitor_performance("export_worker_statistics")
     def export_worker_statistics(self, filename=None):

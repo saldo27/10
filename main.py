@@ -1484,9 +1484,14 @@ class WorkerDetailsScreen(Screen):
         self.form_layout = GridLayout(cols=2, spacing=10, size_hint_y=None, padding=10)
         self.form_layout.bind(minimum_height=self.form_layout.setter('height'))
 
-        # Worker ID
-        self.form_layout.add_widget(Label(text='Worker ID:'))
-        self.worker_id = TextInput(multiline=False, size_hint_y=None, height=40)
+        # Worker ID (optional - auto-generates if empty)
+        self.form_layout.add_widget(Label(text='Worker ID (opcional):'))
+        self.worker_id = TextInput(
+            multiline=False, 
+            size_hint_y=None, 
+            height=40,
+            hint_text='Dejar vacío para auto-generar (Worker_1, Worker_2, ...)'
+        )
         self.form_layout.add_widget(self.worker_id)
 
         # Work Periods
@@ -1594,12 +1599,18 @@ class WorkerDetailsScreen(Screen):
         except ValueError:
             return False
         
+    def _generate_worker_id(self):
+        """Generate automatic worker ID if empty"""
+        app = App.get_running_app()
+        current_index = app.schedule_config.get('current_worker_index', 0)
+        # Generate Worker_1, Worker_2, etc. (1-indexed for user friendliness)
+        return f"Worker_{current_index + 1}"
+    
     def validate_worker_data(self):
         """Validate all worker data fields"""
-        if not self.worker_id.text.strip():
-            self.show_error("Worker ID is required")
-            return False
-
+        # NOTE: Worker ID is now OPTIONAL - will be auto-generated if empty
+        # No need to validate worker_id anymore
+        
         try:
             work_percentage = float(self.work_percentage.text or '100')
             if not (0 < work_percentage <= 100):
@@ -1632,8 +1643,15 @@ class WorkerDetailsScreen(Screen):
             return
             
         app = App.get_running_app()
+        
+        # Auto-generate worker ID if empty
+        worker_id = self.worker_id.text.strip()
+        if not worker_id:
+            worker_id = self._generate_worker_id()
+            self.worker_id.text = worker_id  # Update UI to show generated ID
+        
         worker_data = {
-            'id': self.worker_id.text.strip(),
+            'id': worker_id,
             'work_periods': self.work_periods.text.strip(),
             'work_percentage': float(self.work_percentage.text or '100'),
             'mandatory_days': self.mandatory_days.text.strip(),
@@ -1688,9 +1706,15 @@ class WorkerDetailsScreen(Screen):
         current_index = app.schedule_config.get('current_worker_index', 0)
         total_workers = app.schedule_config.get('num_workers', 0)
     
+        # Auto-generate worker ID if empty
+        worker_id = self.worker_id.text.strip()
+        if not worker_id:
+            worker_id = self._generate_worker_id()
+            self.worker_id.text = worker_id  # Update UI to show generated ID
+    
         # Save current worker data
         worker_data = {
-            'id': self.worker_id.text.strip(),
+            'id': worker_id,
             'work_periods': self.work_periods.text.strip(),
             'work_percentage': float(self.work_percentage.text or '100'),
             'mandatory_days': self.mandatory_days.text.strip(),
@@ -3588,31 +3612,26 @@ class CalendarViewScreen(Screen):
         self.suggestions_layout.height = max(0, self.suggestions_layout.height - 60)
 
     def _generate_summary_pdf_after_adjustment(self):
-        """Genera un PDF summary_global después de aplicar un ajuste"""
+        """Genera un PDF con todos los meses del horario después de aplicar un ajuste"""
         try:
             app = App.get_running_app()
             
-            # Importar y crear statistics para el PDF
-            from statistics import StatisticsCalculator
+            # Usar PDFExporter para generar el PDF con todos los meses
+            from pdf_exporter import PDFExporter
             
-            # Necesitamos crear un objeto scheduler temporal para las estadísticas
-            from scheduler import Scheduler
-            temp_scheduler = Scheduler(app.schedule_config)
-            temp_scheduler.schedule = app.schedule_config.get('schedule', {})
+            # Crear el exporter con la configuración actualizada
+            exporter = PDFExporter(app.schedule_config)
             
-            # Crear objeto StatisticsCalculator
-            stats_calc = StatisticsCalculator(temp_scheduler)
+            # Generar PDF con TODOS los meses en formato apaisado (1 mes por hoja)
+            filename = exporter.export_all_months_calendar()
             
-            # Generar estadísticas completas
-            stats_data = stats_calc.gather_statistics()
-            
-            # Llamar al método de exportación PDF summary
-            self.export_summary_pdf(stats_data)
-            
-            logging.info("PDF summary_global generado después del ajuste")
+            if filename:
+                logging.info(f"PDF multi-month calendar generated after adjustment: {filename}")
+            else:
+                logging.warning("Failed to generate PDF after adjustment")
             
         except Exception as e:
-            logging.error(f"Error generating summary PDF after adjustment: {e}")
+            logging.error(f"Error generating calendar PDF after adjustment: {e}", exc_info=True)
             # No mostrar error popup aquí ya que el éxito del ajuste es lo importante
             print(f"DEBUG: Error generating PDF after adjustment: {e}")
 
@@ -3628,9 +3647,9 @@ class CalendarViewScreen(Screen):
             # Mostrar mensaje de finalización y regresar al calendario
             final_popup = Popup(
                 title='Ajustes Finalizados',
-                content=Label(text='Los ajustes han sido finalizados.\nSe ha generado el PDF summary_global.\nRegresando al calendario...'),
+                content=Label(text='Los ajustes han sido finalizados.\nSe ha generado el PDF con todos los meses del horario\n(formato A4 apaisado, 1 mes por hoja).\nRegresando al calendario...'),
                 size_hint=(None, None),
-                size=(450, 250)
+                size=(500, 250)
             )
             
             # Programar cierre del popup y regreso al calendario
