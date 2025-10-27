@@ -681,10 +681,10 @@ class SchedulerCore:
         try:
             # Check initial tolerance violations
             outside_general = self.tolerance_validator.get_workers_outside_tolerance(
-                self.scheduler.schedule, shift_type='general'
+                is_weekend_only=False
             )
             outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(
-                self.scheduler.schedule, shift_type='weekend'
+                is_weekend_only=True
             )
             
             total_violations = len(outside_general) + len(outside_weekend)
@@ -701,15 +701,17 @@ class SchedulerCore:
             # Log violations details
             if outside_general:
                 logging.info("General shift violations:")
-                for worker_id, info in list(outside_general.items())[:5]:  # Show first 5
-                    logging.info(f"  - {worker_id}: {info['assigned']} assigned (target: {info['target']}, "
-                               f"deviation: {info['deviation']:+.1f}%)")
+                for violation in outside_general[:5]:  # Show first 5
+                    logging.info(f"  - {violation['worker_id']}: {violation['assigned_shifts']} assigned "
+                               f"(target: {violation['target_shifts']}, "
+                               f"deviation: {violation['deviation_percentage']:+.1f}%)")
             
             if outside_weekend:
                 logging.info("Weekend shift violations:")
-                for worker_id, info in list(outside_weekend.items())[:5]:  # Show first 5
-                    logging.info(f"  - {worker_id}: {info['assigned']} assigned (target: {info['target']}, "
-                               f"deviation: {info['deviation']:+.1f}%)")
+                for violation in outside_weekend[:5]:  # Show first 5
+                    logging.info(f"  - {violation['worker_id']}: {violation['assigned_shifts']} assigned "
+                               f"(target: {violation['target_shifts']}, "
+                               f"deviation: {violation['deviation_percentage']:+.1f}%)")
             
             # Apply iterative optimization
             logging.info(f"Starting iterative optimization (max {self.iterative_optimizer.max_iterations} iterations)...")
@@ -723,12 +725,16 @@ class SchedulerCore:
             
             # Check if optimization improved the schedule
             if optimized_schedule and optimized_schedule != self.scheduler.schedule:
+                # Apply optimized schedule temporarily to check
+                original_schedule = self.scheduler.schedule
+                self.scheduler.schedule = optimized_schedule
+                
                 # Verify improved tolerance
                 new_outside_general = self.tolerance_validator.get_workers_outside_tolerance(
-                    optimized_schedule, shift_type='general'
+                    is_weekend_only=False
                 )
                 new_outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(
-                    optimized_schedule, shift_type='weekend'
+                    is_weekend_only=True
                 )
                 
                 new_total_violations = len(new_outside_general) + len(new_outside_weekend)
@@ -738,8 +744,7 @@ class SchedulerCore:
                     logging.info(f"  General violations: {len(outside_general)} → {len(new_outside_general)}")
                     logging.info(f"  Weekend violations: {len(outside_weekend)} → {len(new_outside_weekend)}")
                     
-                    # Apply optimized schedule
-                    self.scheduler.schedule = optimized_schedule
+                    # Keep optimized schedule (already applied)
                     # Resync tracking data
                     self.scheduler._synchronize_tracking_data()
                     
@@ -747,18 +752,20 @@ class SchedulerCore:
                 elif new_total_violations == total_violations:
                     logging.info(f"Optimization did not reduce violations (still {total_violations})")
                     logging.info("Keeping original schedule")
+                    self.scheduler.schedule = original_schedule
                 else:
                     logging.warning(f"Optimization made things worse: {total_violations} → {new_total_violations}")
                     logging.info("Keeping original schedule")
+                    self.scheduler.schedule = original_schedule
             else:
                 logging.info("No optimization improvements found, keeping original schedule")
             
             # Final tolerance report
             final_outside_general = self.tolerance_validator.get_workers_outside_tolerance(
-                self.scheduler.schedule, shift_type='general'
+                is_weekend_only=False
             )
             final_outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(
-                self.scheduler.schedule, shift_type='weekend'
+                is_weekend_only=True
             )
             
             final_total = len(final_outside_general) + len(final_outside_weekend)
