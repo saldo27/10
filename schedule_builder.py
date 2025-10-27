@@ -266,6 +266,9 @@ class ScheduleBuilder:
         """
         CRITICAL: Check if assigning this worker would violate ±8% tolerance.
         
+        IMPORTANT: This method ONLY blocks EXCESS (+8%), NOT deficit.
+        Workers below target should ALWAYS be encouraged, not blocked.
+        
         This method provides CENTRAL tolerance validation for ALL assignments,
         whether they go through _calculate_worker_score or not (swaps, balance, etc).
         
@@ -294,7 +297,7 @@ class ScheduleBuilder:
         tolerance_amount = target_shifts * tolerance
         max_allowed = int(target_shifts + tolerance_amount + 0.5)  # Round up
         
-        # Check general shifts tolerance
+        # ONLY check UPPER bound - never block workers with deficit
         if assignments_after > max_allowed:
             if allow_relaxation:
                 logging.warning(f"⚠️ Tolerance violation: {worker_id} would have {assignments_after} shifts "
@@ -304,6 +307,11 @@ class ScheduleBuilder:
                 logging.debug(f"🚫 BLOCKED: {worker_id} would exceed +8% tolerance "
                             f"({assignments_after} > {max_allowed}, target: {target_shifts})")
                 return True  # BLOCK
+        
+        # If worker is BELOW target, encourage assignment (never block)
+        if assignments_after < target_shifts:
+            logging.debug(f"✅ ENCOURAGED: {worker_id} below target ({assignments_after} < {target_shifts}), should prioritize")
+            return False  # Definitely OK
         
         # Check weekend tolerance if this is a weekend
         if self._is_weekend_or_holiday(date):
@@ -319,6 +327,7 @@ class ScheduleBuilder:
             weekend_tolerance_amount = weekend_target * tolerance
             max_weekend_allowed = int(weekend_target + weekend_tolerance_amount + 0.5)
             
+            # ONLY check UPPER bound for weekends too
             if weekend_after > max_weekend_allowed:
                 if allow_relaxation:
                     logging.warning(f"⚠️ Weekend tolerance violation: {worker_id} would have {weekend_after} weekend shifts "
@@ -870,8 +879,10 @@ class ScheduleBuilder:
         """
         Calculate score based on overall target shifts with ±8% tolerance enforcement.
         
-        This method now enforces the ±8% tolerance during assignment to prevent
-        violations from occurring in the first place.
+        CRITICAL LOGIC:
+        - Workers BELOW target get HUGE bonus (encouragement)
+        - Workers ABOVE +8% get blocked (prevention)
+        - Never penalize workers with deficit
         """
         current_total_shifts = len(self.worker_assignments.get(worker_id, set()))
         overall_target_shifts = worker_config.get('target_shifts', 0) if worker_config else 0
@@ -888,7 +899,7 @@ class ScheduleBuilder:
         # Count after potential assignment
         shifts_after_assignment = current_total_shifts + 1
         
-        # STRICT: Block assignments that would violate ±8% tolerance
+        # STRICT: Block assignments that would violate +8% upper tolerance
         if shifts_after_assignment > max_allowed:
             if relaxation_level < 2:
                 # Hard block at relaxation levels 0 and 1
@@ -903,20 +914,21 @@ class ScheduleBuilder:
                             f"(penalty: {penalty})")
                 return -penalty
         
-        # Encourage workers below target, prioritize those furthest from target
+        # CRITICAL: Encourage workers BELOW target - HUGE bonus for large deficits
         if shifts_after_assignment < overall_target_shifts:
             deficit = overall_target_shifts - shifts_after_assignment
-            # Higher bonus for workers further from target
-            bonus = deficit * 1000
+            # MASSIVE bonus for workers far from target (e.g., 33/55 = 22 deficit)
+            bonus = deficit * 3000  # Increased from 1000 to 3000
+            logging.debug(f"Worker {worker_id}: HUGE BONUS for deficit ({shifts_after_assignment} < {overall_target_shifts}, bonus: {bonus})")
             return bonus
         elif shifts_after_assignment == overall_target_shifts:
             # Good - exactly at target
             return 500
         else:
-            # Above target but within tolerance
+            # Above target but within +8% tolerance
             excess = shifts_after_assignment - overall_target_shifts
-            # Small penalty, but still allowed
-            penalty = excess * 200
+            # Very small penalty, should still allow
+            penalty = excess * 100  # Reduced from 200 to 100
             return -penalty
     
     def _check_gap_constraints(self, worker, date, relaxation_level):
@@ -970,7 +982,11 @@ class ScheduleBuilder:
         return True
 
     def _calculate_target_shift_score(self, worker, mandatory_dates, relaxation_level):
-        """Calculate score based on target shifts and mandatory assignments"""
+        """
+        Calculate score based on target shifts and mandatory assignments.
+        
+        CRITICAL: Never block workers with deficit. Always encourage filling targets.
+        """
         worker_id = worker['id']
         current_shifts = len(self.worker_assignments[worker_id])
         target_shifts = worker.get('target_shifts', 0)
@@ -993,23 +1009,24 @@ class ScheduleBuilder:
         # Check if we've already met or exceeded non-mandatory target
         shift_difference = non_mandatory_target - non_mandatory_assigned
         
-        # Reserve capacity for remaining mandatory shifts
-        if (non_mandatory_assigned + mandatory_shifts_remaining >= target_shifts 
-            and relaxation_level < 2):
-            return float('-inf')
+        # REMOVED: The restrictive check that was blocking assignments
+        # Old logic: if (non_mandatory_assigned + mandatory_shifts_remaining >= target_shifts and relaxation_level < 2):
+        #     return float('-inf')
+        # This was TOO restrictive and prevented workers from reaching their targets
         
         # Calculate score based on shift difference
         score = 0
         if shift_difference <= 0:
+            # Worker has met non-mandatory target
             if relaxation_level == 0:
-                score -= 8000 * abs(shift_difference)  # Heavy penalty, not impossible
+                score -= 5000 * abs(shift_difference)  # Reduced from 8000
             elif relaxation_level == 1:
-                score -= 5000 * abs(shift_difference)  # Moderate penalty
+                score -= 3000 * abs(shift_difference)  # Reduced from 5000
             else:
-                score -= 2000 * abs(shift_difference)  # Light penalty at high relaxation
+                score -= 1000 * abs(shift_difference)  # Reduced from 2000
         else:
             # Prioritize workers who are furthest below target
-            score += shift_difference * 2000
+            score += shift_difference * 3000  # Increased from 2000 to 3000
             
         return score
 
