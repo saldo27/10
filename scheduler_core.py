@@ -6,6 +6,8 @@ extracted from the original Scheduler class to improve maintainability and separ
 """
 
 import logging
+import copy
+import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Set, Optional, Tuple, Any
 
@@ -16,6 +18,7 @@ from operation_prioritizer import OperationPrioritizer
 from progress_monitor import ProgressMonitor
 from iterative_optimizer import IterativeOptimizer
 from shift_tolerance_validator import ShiftToleranceValidator
+from adaptive_iterations import AdaptiveIterationManager
 
 
 class SchedulerCore:
@@ -46,6 +49,9 @@ class SchedulerCore:
         self.tolerance_validator = ShiftToleranceValidator(scheduler)
         self.iterative_optimizer = IterativeOptimizer(max_iterations=20, tolerance=0.08)
         
+        # Initialize adaptive iteration manager for intelligent optimization
+        self.adaptive_manager = AdaptiveIterationManager(scheduler)
+        
         logging.info("SchedulerCore initialized with enhanced optimization systems and tolerance validation")
     
     def orchestrate_schedule_generation(self, max_improvement_loops: int = 70) -> bool:
@@ -69,6 +75,10 @@ class SchedulerCore:
             # Phase 2: Assign mandatory shifts
             if not self._assign_mandatory_phase():
                 raise SchedulerError("Failed to assign mandatory shifts")
+            
+            # Phase 2.5: Multiple initial distribution attempts (NEW)
+            if not self._multiple_initial_distribution_attempts():
+                logging.warning("Multiple initial attempts phase completed with issues")
             
             # Phase 3: Iterative improvement
             if not self._iterative_improvement_phase(max_improvement_loops):
@@ -150,6 +160,177 @@ class SchedulerCore:
             
         except Exception as e:
             logging.error(f"Failed in mandatory assignment phase: {str(e)}", exc_info=True)
+            return False
+    
+    def _multiple_initial_distribution_attempts(self) -> bool:
+        """
+        Phase 2.5: Perform multiple initial distribution attempts with different strategies
+        and select the best one based on quality score.
+        
+        This phase uses AdaptiveIterationManager to determine how many attempts to make
+        based on problem complexity. Each attempt uses a different strategy:
+        - Random seed variation
+        - Different worker ordering
+        - Different post assignment priorities
+        
+        Returns:
+            bool: True if at least one attempt was successful
+        """
+        logging.info("=" * 80)
+        logging.info("Phase 2.5: Multiple Initial Distribution Attempts")
+        logging.info("=" * 80)
+        
+        try:
+            # Get adaptive configuration to determine number of attempts
+            adaptive_config = self.adaptive_manager.calculate_adaptive_iterations()
+            
+            # Determine number of initial attempts based on complexity
+            complexity_score = adaptive_config.get('complexity_score', 0)
+            
+            if complexity_score < 1000:
+                num_attempts = 3
+            elif complexity_score < 5000:
+                num_attempts = 5
+            elif complexity_score < 15000:
+                num_attempts = 7
+            else:
+                num_attempts = 10
+            
+            logging.info(f"Problem complexity: {complexity_score:.0f}")
+            logging.info(f"Number of initial distribution attempts: {num_attempts}")
+            
+            # Save current mandatory state (this must be preserved)
+            mandatory_backup = copy.deepcopy(self.scheduler.schedule)
+            mandatory_assignments = copy.deepcopy(self.scheduler.worker_assignments)
+            mandatory_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
+            mandatory_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
+            mandatory_posts = copy.deepcopy(self.scheduler.worker_posts)
+            
+            best_attempt = None
+            best_score = -1
+            attempts_results = []
+            
+            # Start adaptive iteration manager timer
+            self.adaptive_manager.start_time = datetime.now()
+            
+            for attempt_num in range(1, num_attempts + 1):
+                logging.info(f"\n{'─' * 80}")
+                logging.info(f"🔄 Initial Distribution Attempt {attempt_num}/{num_attempts}")
+                logging.info(f"{'─' * 80}")
+                
+                # Restore mandatory state
+                self.scheduler.schedule = copy.deepcopy(mandatory_backup)
+                self.scheduler.worker_assignments = copy.deepcopy(mandatory_assignments)
+                self.scheduler.worker_shift_counts = copy.deepcopy(mandatory_counts)
+                self.scheduler.worker_weekend_counts = copy.deepcopy(mandatory_weekend_counts)
+                self.scheduler.worker_posts = copy.deepcopy(mandatory_posts)
+                
+                # Apply different strategy for each attempt
+                strategy = self._select_distribution_strategy(attempt_num, num_attempts)
+                logging.info(f"Strategy for attempt {attempt_num}: {strategy['name']}")
+                
+                # Perform initial fill with this strategy
+                success = self._perform_initial_fill_with_strategy(strategy)
+                
+                if not success:
+                    logging.warning(f"Attempt {attempt_num} failed to fill schedule")
+                    attempts_results.append({
+                        'attempt': attempt_num,
+                        'strategy': strategy['name'],
+                        'success': False,
+                        'score': 0
+                    })
+                    continue
+                
+                # Calculate quality score for this attempt
+                score = self.metrics.calculate_overall_schedule_score()
+                
+                # Get detailed metrics
+                empty_shifts = self.metrics.count_empty_shifts()
+                workload_imbalance = self.metrics.calculate_workload_imbalance()
+                weekend_imbalance = self.metrics.calculate_weekend_imbalance()
+                
+                logging.info(f"📊 Attempt {attempt_num} Results:")
+                logging.info(f"   Overall Score: {score:.2f}")
+                logging.info(f"   Empty Shifts: {empty_shifts}")
+                logging.info(f"   Workload Imbalance: {workload_imbalance:.2f}")
+                logging.info(f"   Weekend Imbalance: {weekend_imbalance:.2f}")
+                
+                # Record this attempt
+                attempts_results.append({
+                    'attempt': attempt_num,
+                    'strategy': strategy['name'],
+                    'success': True,
+                    'score': score,
+                    'empty_shifts': empty_shifts,
+                    'workload_imbalance': workload_imbalance,
+                    'weekend_imbalance': weekend_imbalance
+                })
+                
+                # Check if this is the best so far
+                if score > best_score:
+                    best_score = score
+                    best_attempt = attempt_num
+                    # Save this as the best attempt
+                    best_schedule = copy.deepcopy(self.scheduler.schedule)
+                    best_assignments = copy.deepcopy(self.scheduler.worker_assignments)
+                    best_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
+                    best_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
+                    best_posts = copy.deepcopy(self.scheduler.worker_posts)
+                    
+                    logging.info(f"✨ New best attempt! Score: {score:.2f}")
+            
+            # Summary of all attempts
+            logging.info(f"\n{'=' * 80}")
+            logging.info("📈 INITIAL DISTRIBUTION ATTEMPTS SUMMARY")
+            logging.info(f"{'=' * 80}")
+            
+            successful_attempts = [r for r in attempts_results if r['success']]
+            
+            if not successful_attempts:
+                logging.error("❌ All initial distribution attempts failed!")
+                return False
+            
+            logging.info(f"Successful attempts: {len(successful_attempts)}/{num_attempts}")
+            
+            # Display results table
+            logging.info(f"\n{'Attempt':<10} {'Strategy':<25} {'Score':<10} {'Empty':<8} {'Work Imb':<10} {'Weekend Imb':<12}")
+            logging.info("─" * 90)
+            
+            for result in attempts_results:
+                if result['success']:
+                    marker = "👑" if result['attempt'] == best_attempt else "  "
+                    logging.info(
+                        f"{marker} {result['attempt']:<8} {result['strategy']:<25} "
+                        f"{result['score']:<10.2f} {result['empty_shifts']:<8} "
+                        f"{result['workload_imbalance']:<10.2f} {result['weekend_imbalance']:<12.2f}"
+                    )
+                else:
+                    logging.info(f"  {result['attempt']:<8} {result['strategy']:<25} FAILED")
+            
+            # Apply the best attempt
+            logging.info(f"\n🏆 Applying best attempt #{best_attempt} with score {best_score:.2f}")
+            
+            self.scheduler.schedule = best_schedule
+            self.scheduler.worker_assignments = best_assignments
+            self.scheduler.worker_shift_counts = best_counts
+            self.scheduler.worker_weekend_counts = best_weekend_counts
+            self.scheduler.worker_posts = best_posts
+            
+            # Synchronize tracking data
+            self.scheduler.schedule_builder._synchronize_tracking_data()
+            
+            # Save as current best
+            self.scheduler.schedule_builder._save_current_as_best(initial=False)
+            
+            logging.info("=" * 80)
+            logging.info("✅ Multiple initial distribution phase completed successfully")
+            logging.info("=" * 80)
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error during multiple initial distribution attempts: {str(e)}", exc_info=True)
             return False
     
     def _iterative_improvement_phase(self, max_improvement_loops: int) -> bool:
@@ -597,3 +778,192 @@ class SchedulerCore:
         except Exception as e:
             logging.error(f"Error during tolerance optimization: {e}", exc_info=True)
             logging.info("Continuing with original schedule")
+    
+    def _select_distribution_strategy(self, attempt_num: int, total_attempts: int) -> Dict[str, Any]:
+        """
+        Select a distribution strategy for this attempt.
+        
+        Different strategies vary in:
+        - Worker ordering (random, balanced, sequential)
+        - Random seed
+        - Priority criteria
+        
+        Args:
+            attempt_num: Current attempt number (1-indexed)
+            total_attempts: Total number of attempts
+            
+        Returns:
+            Dict with strategy configuration
+        """
+        strategies = [
+            {
+                'name': 'Balanced Sequential',
+                'worker_order': 'balanced',
+                'randomize': False,
+                'seed': None,
+                'description': 'Workers ordered by workload balance, deterministic assignment'
+            },
+            {
+                'name': 'Random Seed A',
+                'worker_order': 'random',
+                'randomize': True,
+                'seed': 42 + attempt_num,
+                'description': 'Random worker order with specific seed for reproducibility'
+            },
+            {
+                'name': 'Sequential by ID',
+                'worker_order': 'sequential',
+                'randomize': False,
+                'seed': None,
+                'description': 'Workers processed in ID order, deterministic'
+            },
+            {
+                'name': 'Random Seed B',
+                'worker_order': 'random',
+                'randomize': True,
+                'seed': 100 + attempt_num * 7,
+                'description': 'Different random seed for variation'
+            },
+            {
+                'name': 'Reverse Sequential',
+                'worker_order': 'reverse',
+                'randomize': False,
+                'seed': None,
+                'description': 'Workers processed in reverse ID order'
+            },
+            {
+                'name': 'Random Seed C',
+                'worker_order': 'random',
+                'randomize': True,
+                'seed': 200 + attempt_num * 13,
+                'description': 'Another random variation'
+            },
+            {
+                'name': 'Workload Priority',
+                'worker_order': 'workload',
+                'randomize': False,
+                'seed': None,
+                'description': 'Prioritize workers with fewer assignments'
+            },
+            {
+                'name': 'Random Seed D',
+                'worker_order': 'random',
+                'randomize': True,
+                'seed': 300 + attempt_num * 17,
+                'description': 'Yet another random variation'
+            },
+            {
+                'name': 'Alternating Pattern',
+                'worker_order': 'alternating',
+                'randomize': False,
+                'seed': None,
+                'description': 'Alternate between high and low workload workers'
+            },
+            {
+                'name': 'Random Seed E',
+                'worker_order': 'random',
+                'randomize': True,
+                'seed': 400 + attempt_num * 23,
+                'description': 'Final random variation'
+            }
+        ]
+        
+        # Select strategy based on attempt number
+        strategy_index = (attempt_num - 1) % len(strategies)
+        return strategies[strategy_index]
+    
+    def _perform_initial_fill_with_strategy(self, strategy: Dict[str, Any]) -> bool:
+        """
+        Perform initial schedule fill using the specified strategy.
+        
+        Args:
+            strategy: Strategy configuration dictionary
+            
+        Returns:
+            bool: True if fill was successful
+        """
+        try:
+            # Set random seed if specified
+            if strategy.get('seed') is not None:
+                random.seed(strategy['seed'])
+            
+            # Get worker list based on strategy
+            workers_list = self._get_ordered_workers_list(strategy['worker_order'])
+            
+            logging.info(f"Filling schedule with {len(workers_list)} workers using '{strategy['name']}' strategy")
+            
+            # Perform initial fill
+            # Use adaptive iteration config to determine fill attempts
+            adaptive_config = self.adaptive_manager.calculate_adaptive_iterations()
+            fill_attempts = adaptive_config.get('fill_attempts', 16)
+            
+            logging.info(f"Using {fill_attempts} fill attempts based on adaptive configuration")
+            
+            # Call schedule builder's fill method with custom worker ordering
+            success = self.scheduler.schedule_builder._try_fill_empty_shifts_with_worker_order(
+                workers_list, max_attempts=fill_attempts
+            )
+            
+            if success:
+                logging.info(f"✅ Initial fill successful with '{strategy['name']}' strategy")
+            else:
+                logging.warning(f"⚠️  Initial fill had issues with '{strategy['name']}' strategy")
+            
+            return success
+            
+        except AttributeError:
+            # Fallback if custom worker order method doesn't exist
+            logging.warning("Custom worker order method not available, using standard fill")
+            return self.scheduler.schedule_builder._try_fill_empty_shifts()
+            
+        except Exception as e:
+            logging.error(f"Error during initial fill with strategy '{strategy['name']}': {e}", exc_info=True)
+            return False
+    
+    def _get_ordered_workers_list(self, order_type: str) -> List[Dict]:
+        """
+        Get workers list ordered according to specified type.
+        
+        Args:
+            order_type: Type of ordering ('balanced', 'random', 'sequential', 'reverse', 
+                       'workload', 'alternating')
+            
+        Returns:
+            List of worker dictionaries in specified order
+        """
+        workers = list(self.workers_data)
+        
+        if order_type == 'random':
+            random.shuffle(workers)
+            
+        elif order_type == 'sequential':
+            workers.sort(key=lambda w: w['id'])
+            
+        elif order_type == 'reverse':
+            workers.sort(key=lambda w: w['id'], reverse=True)
+            
+        elif order_type == 'balanced':
+            # Order by current assignment count (fewer first)
+            workers.sort(key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0))
+            
+        elif order_type == 'workload':
+            # Order by target shifts (higher target first)
+            workers.sort(key=lambda w: w.get('target_shifts', 0), reverse=True)
+            
+        elif order_type == 'alternating':
+            # Alternate between low and high workload
+            workers.sort(key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0))
+            alternated = []
+            low_idx = 0
+            high_idx = len(workers) - 1
+            while low_idx <= high_idx:
+                if low_idx == high_idx:
+                    alternated.append(workers[low_idx])
+                else:
+                    alternated.append(workers[low_idx])
+                    alternated.append(workers[high_idx])
+                low_idx += 1
+                high_idx -= 1
+            workers = alternated
+        
+        return workers

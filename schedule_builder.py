@@ -1509,6 +1509,96 @@ class ScheduleBuilder:
             self._synchronize_tracking_data() # Ensure builder's and scheduler's data are aligned
             self._save_current_as_best()
         return made_change_overall
+    
+    def _try_fill_empty_shifts_with_worker_order(self, workers_list: List[Dict], max_attempts: int = 16) -> bool:
+        """
+        Try to fill empty shifts using a custom worker ordering.
+        
+        This method is used for initial distribution attempts with different strategies.
+        It fills shifts by iterating through workers in the specified order.
+        
+        Args:
+            workers_list: List of worker dictionaries in the desired processing order
+            max_attempts: Maximum number of fill attempts
+            
+        Returns:
+            bool: True if any shifts were filled
+        """
+        logging.info(f"Filling empty shifts with custom worker order ({len(workers_list)} workers)")
+        
+        shifts_filled = 0
+        made_change = False
+        
+        for attempt in range(max_attempts):
+            # Get current empty shifts
+            empty_slots = []
+            for date_val, workers_in_posts in self.schedule.items():
+                for post_index, worker_in_post in enumerate(workers_in_posts):
+                    if worker_in_post is None:
+                        empty_slots.append((date_val, post_index))
+            
+            if not empty_slots:
+                logging.info(f"All shifts filled after {attempt + 1} attempts")
+                break
+            
+            if attempt == 0:
+                logging.info(f"Starting with {len(empty_slots)} empty shifts")
+            
+            # Sort chronologically
+            empty_slots.sort(key=lambda x: (x[0], x[1]))
+            
+            # Try to fill each empty slot using custom worker order
+            filled_this_attempt = 0
+            
+            for date_val, post_val in empty_slots:
+                # Skip if already filled
+                if self.schedule[date_val][post_val] is not None:
+                    continue
+                
+                # Try workers in the specified order
+                for worker_data in workers_list:
+                    worker_id = worker_data['id']
+                    
+                    # Check if worker can be assigned
+                    score = self._calculate_worker_score(worker_data, date_val, post_val, relaxation_level=0)
+                    
+                    if score > float('-inf'):
+                        # Additional incompatibility check
+                        others_now = [w for i, w in enumerate(self.schedule.get(date_val, [])) 
+                                     if i != post_val and w is not None]
+                        
+                        if not self._check_incompatibility_with_list(worker_id, others_now):
+                            continue
+                        
+                        if not self._can_assign_worker(worker_id, date_val, post_val):
+                            continue
+                        
+                        # Assign worker
+                        self.schedule[date_val][post_val] = worker_id
+                        self.worker_assignments[worker_id].add((date_val, post_val))
+                        
+                        filled_this_attempt += 1
+                        made_change = True
+                        break  # Move to next empty slot
+            
+            shifts_filled += filled_this_attempt
+            
+            if filled_this_attempt == 0:
+                # No progress in this attempt, try with relaxation
+                if attempt < max_attempts - 1:
+                    logging.debug(f"Attempt {attempt + 1}: No fills, will try with relaxation")
+                else:
+                    logging.debug(f"Attempt {attempt + 1}: No fills possible")
+                    break
+            else:
+                logging.debug(f"Attempt {attempt + 1}: Filled {filled_this_attempt} shifts")
+        
+        if made_change:
+            self._synchronize_tracking_data()
+            logging.info(f"Custom worker order fill: {shifts_filled} shifts filled")
+        
+        return made_change
+        return made_change_overall
 
     def _find_swap_candidate(self, worker_W_id, conflict_date, conflict_post):
         """
