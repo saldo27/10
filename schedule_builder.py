@@ -262,6 +262,75 @@ class ScheduleBuilder:
 
         return False
     
+    def _would_violate_tolerance(self, worker_id, date, allow_relaxation=False):
+        """
+        CRITICAL: Check if assigning this worker would violate ±8% tolerance.
+        
+        This method provides CENTRAL tolerance validation for ALL assignments,
+        whether they go through _calculate_worker_score or not (swaps, balance, etc).
+        
+        Args:
+            worker_id: Worker to check
+            date: Date of potential assignment
+            allow_relaxation: If True, allow violations with warning. If False, BLOCK.
+            
+        Returns:
+            bool: True if would violate tolerance (should block), False if OK
+        """
+        worker_data = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker_data:
+            return False  # Unknown worker, let other checks handle it
+        
+        target_shifts = worker_data.get('target_shifts', 0)
+        if target_shifts <= 0:
+            return False  # No target, no tolerance check
+        
+        # Calculate current assignments
+        current_assignments = len(self.worker_assignments.get(worker_id, set()))
+        assignments_after = current_assignments + 1
+        
+        # Calculate ±8% tolerance bounds
+        tolerance = 0.08
+        tolerance_amount = target_shifts * tolerance
+        max_allowed = int(target_shifts + tolerance_amount + 0.5)  # Round up
+        
+        # Check general shifts tolerance
+        if assignments_after > max_allowed:
+            if allow_relaxation:
+                logging.warning(f"⚠️ Tolerance violation: {worker_id} would have {assignments_after} shifts "
+                              f"(max allowed: {max_allowed}, target: {target_shifts}) - ALLOWED due to relaxation")
+                return False  # Allow but warn
+            else:
+                logging.debug(f"🚫 BLOCKED: {worker_id} would exceed +8% tolerance "
+                            f"({assignments_after} > {max_allowed}, target: {target_shifts})")
+                return True  # BLOCK
+        
+        # Check weekend tolerance if this is a weekend
+        if self._is_weekend_or_holiday(date):
+            weekend_assignments = sum(
+                1 for d in self.worker_assignments.get(worker_id, set())
+                if self._is_weekend_or_holiday(d)
+            )
+            weekend_after = weekend_assignments + 1
+            
+            # Calculate weekend target (approximately 3/7 days are Fri-Sun)
+            weekend_percentage = 3.0 / 7.0
+            weekend_target = target_shifts * weekend_percentage
+            weekend_tolerance_amount = weekend_target * tolerance
+            max_weekend_allowed = int(weekend_target + weekend_tolerance_amount + 0.5)
+            
+            if weekend_after > max_weekend_allowed:
+                if allow_relaxation:
+                    logging.warning(f"⚠️ Weekend tolerance violation: {worker_id} would have {weekend_after} weekend shifts "
+                                  f"(max allowed: {max_weekend_allowed}, target: {weekend_target:.1f}) - ALLOWED due to relaxation")
+                    return False  # Allow but warn
+                else:
+                    logging.debug(f"🚫 BLOCKED: {worker_id} would exceed +8% weekend tolerance "
+                                f"({weekend_after} > {max_weekend_allowed}, target: {weekend_target:.1f})")
+                    return True  # BLOCK
+        
+        return False  # OK to assign
+    
     def _check_incompatibility_with_list(self, worker_id_to_check, assigned_workers_list):
         """
         Optimized method to check if worker_id_to_check is incompatible with anyone in the list.
@@ -1494,6 +1563,9 @@ class ScheduleBuilder:
                         # CRITICAL FIX: Add comprehensive constraint check before assignment
                         elif not self._can_assign_worker(worker_id_to_assign, date_val, post_val):
                             logging.debug(f"      -> Pass1 Assignment REJECTED (Constraint Check): W:{worker_id_to_assign} for {date_val.strftime('%Y-%m-%d')} P:{post_val} at Relax {relax_lvl_attempt}")
+                        # CRITICAL: Check ±8% tolerance before assignment
+                        elif self._would_violate_tolerance(worker_id_to_assign, date_val, allow_relaxation=(relax_lvl_attempt >= 2)):
+                            logging.debug(f"      -> Pass1 Assignment REJECTED (Tolerance): W:{worker_id_to_assign} for {date_val.strftime('%Y-%m-%d')} P:{post_val} at Relax {relax_lvl_attempt}")
                         else:
                             self.schedule[date_val][post_val] = worker_id_to_assign
                             self.worker_assignments.setdefault(worker_id_to_assign, set()).add(date_val)
@@ -1667,6 +1739,10 @@ class ScheduleBuilder:
                             continue
                         
                         if not self._can_assign_worker(worker_id, date_val, post_val):
+                            continue
+                        
+                        # CRITICAL: Check ±8% tolerance before assignment
+                        if self._would_violate_tolerance(worker_id, date_val, allow_relaxation=False):
                             continue
                         
                         # Assign worker
