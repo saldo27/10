@@ -31,17 +31,17 @@ class IterativeOptimizer:
     until tolerance requirements are met.
     """
     
-    def __init__(self, max_iterations: int = 30, tolerance: float = 0.08):
+    def __init__(self, max_iterations: int = 50, tolerance: float = 0.08):
         """
         Initialize the iterative optimizer with enhanced redistribution algorithms.
         
         Args:
-            max_iterations: Maximum number of optimization iterations (default: 30, increased from 15)
+            max_iterations: Maximum number of optimization iterations (default: 50, increased from 30)
             tolerance: Tolerance percentage (0.08 = 8%)
         """
         self.max_iterations = max_iterations
         self.tolerance = tolerance
-        self.convergence_threshold = 3  # Stop after 3 iterations without improvement (reduced for weekend-only aggression)
+        self.convergence_threshold = 5  # Stop after 5 iterations without improvement (increased from 3)
         self.stagnation_counter = 0
         self.best_result = None
         self.optimization_history = []
@@ -420,15 +420,20 @@ class IterativeOptimizer:
         for excess in have_excess_shifts:
             logging.info(f"      🔵 {excess['worker']} has {excess['excess']} excess shifts (deviation: {excess['deviation']:.1f}%)")
         
-        # Smart redistribution algorithm - enhanced for persistent violations
+        # Smart redistribution algorithm - ULTRA AGGRESSIVE for persistent violations
         redistributions_made = 0
-        # More aggressive redistribution limits
-        base_redistributions = len(violations) * 4  # Increased from 3
-        max_redistributions = min(50, base_redistributions)  # Increased from 30
+        # ULTRA AGGRESSIVE redistribution limits
+        base_redistributions = len(violations) * 10  # Increased from 4 to 10
+        max_redistributions = min(200, base_redistributions)  # Increased from 50 to 200
         
         # Extra aggressiveness for high violation counts
         if len(violations) > 5:
-            max_redistributions = min(75, len(violations) * 5)
+            max_redistributions = min(300, len(violations) * 12)  # Increased from 75 to 300
+        
+        # CRITICAL: For very high violations (>20), go EXTREME
+        if len(violations) > 20:
+            max_redistributions = min(500, len(violations) * 15)
+            logging.warning(f"⚠️ EXTREME MODE: {len(violations)} violations detected, allowing up to {max_redistributions} redistributions")
         
         logging.info(f"   📊 Max redistributions allowed: {max_redistributions}")
         
@@ -440,12 +445,14 @@ class IterativeOptimizer:
             excess_worker = excess_info['worker']
             logging.info(f"   🔄 Processing {excess_worker} (deviation: {excess_info['deviation']:.1f}%, excess: {excess_info['excess']})")
             
-            # More aggressive shift removal - scale with violation severity
-            base_shifts = min(excess_info['excess'], 4)
+            # ULTRA AGGRESSIVE shift removal - scale with violation severity
+            base_shifts = min(excess_info['excess'], 8)  # Increased from 4 to 8
             if excess_info['deviation'] > 20:  # Very high deviation
-                shifts_to_remove = min(excess_info['excess'], 6)  # Remove up to 6 shifts
+                shifts_to_remove = min(excess_info['excess'], 15)  # Increased from 6 to 15
             elif excess_info['deviation'] > 15:
-                shifts_to_remove = min(excess_info['excess'], 5)  # Remove up to 5 shifts  
+                shifts_to_remove = min(excess_info['excess'], 12)  # Increased from 5 to 12
+            elif excess_info['deviation'] > 10:
+                shifts_to_remove = min(excess_info['excess'], 10)  # New tier
             else:
                 shifts_to_remove = base_shifts
             
