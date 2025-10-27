@@ -716,18 +716,18 @@ class SchedulerCore:
             # Apply iterative optimization
             logging.info(f"Starting iterative optimization (max {self.iterative_optimizer.max_iterations} iterations)...")
             
-            optimized_schedule = self.iterative_optimizer.optimize(
+            optimization_result = self.iterative_optimizer.optimize_schedule(
+                scheduler_core=self,
                 schedule=self.scheduler.schedule,
                 workers_data=self.workers_data,
-                schedule_config=self.config,
-                scheduler_core=self
+                schedule_config=self.config
             )
             
             # Check if optimization improved the schedule
-            if optimized_schedule and optimized_schedule != self.scheduler.schedule:
+            if optimization_result.success and optimization_result.schedule:
                 # Apply optimized schedule temporarily to check
                 original_schedule = self.scheduler.schedule
-                self.scheduler.schedule = optimized_schedule
+                self.scheduler.schedule = optimization_result.schedule
                 
                 # Verify improved tolerance
                 new_outside_general = self.tolerance_validator.get_workers_outside_tolerance(
@@ -758,6 +758,8 @@ class SchedulerCore:
                     logging.info("Keeping original schedule")
                     self.scheduler.schedule = original_schedule
             else:
+                logging.info(f"Optimization completed in {optimization_result.iteration} iterations")
+                logging.info(f"Final violations: {optimization_result.total_violations}")
                 logging.info("No optimization improvements found, keeping original schedule")
             
             # Final tolerance report
