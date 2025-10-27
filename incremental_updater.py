@@ -85,6 +85,16 @@ class IncrementalUpdater:
             # Store previous assignment
             previous_worker = self.scheduler.schedule.get(shift_date, [None] * self.scheduler.num_shifts)[post_index]
             
+            # CRITICAL: If there's a previous worker and it's a mandatory assignment, block the reassignment
+            if previous_worker and hasattr(self.scheduler, 'schedule_builder') and self.scheduler.schedule_builder:
+                if self.scheduler.schedule_builder._is_mandatory(previous_worker, shift_date):
+                    logging.error(f"BLOCKED assignment: Cannot replace worker {previous_worker} on {shift_date.strftime('%Y-%m-%d')} - this is a MANDATORY assignment")
+                    return UpdateResult(
+                        False,
+                        f"Cannot assign: Post is occupied by worker {previous_worker} who has a MANDATORY assignment on {shift_date.strftime('%Y-%m-%d')}",
+                        rollback_data=rollback_data
+                    )
+            
             # Perform the assignment
             if shift_date not in self.scheduler.schedule:
                 self.scheduler.schedule[shift_date] = [None] * self.scheduler.num_shifts

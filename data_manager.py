@@ -451,12 +451,39 @@ class DataManager:
     def remove_worker_assignment(self, worker_id, date):
         """
         Remove a worker's assignment from a given date and update all tracking data
+        
+        CRITICAL: This method should NEVER remove mandatory_days assignments.
+        If called for a mandatory assignment, it will be blocked and return False.
     
         Args:
             worker_id: The worker's ID
             date: Date of the assignment to remove
+            
+        Returns:
+            bool: True if removed successfully, False if blocked (e.g., mandatory)
         """
         try:
+            # CRITICAL: Check if this is a mandatory assignment - NEVER remove mandatory_days
+            # We need to check the worker's mandatory_days configuration
+            worker_data = next((w for w in self.workers_data if w['id'] == worker_id), None)
+            if worker_data:
+                mandatory_str = worker_data.get('mandatory_days', '')
+                if mandatory_str.strip():
+                    try:
+                        from utilities import DateTimeUtils
+                        date_utils = DateTimeUtils()
+                        mandatory_dates = date_utils.parse_dates(mandatory_str)
+                        
+                        # Check if this date is mandatory
+                        for mandatory_date in mandatory_dates:
+                            if mandatory_date.date() == date.date():
+                                logging.error(f"BLOCKED removal attempt: {date.strftime('%Y-%m-%d')} is a MANDATORY assignment for worker {worker_id}")
+                                return False  # Cannot remove mandatory assignments
+                    except Exception as e:
+                        logging.error(f"Error checking mandatory_days for worker {worker_id}: {e}")
+                        # Fail-safe: if we can't parse mandatory_days, assume it might be mandatory
+                        return False
+            
             # Check if the worker is actually assigned to this date
             if worker_id not in self.schedule.get(date, []):
                 logging.warning(f"Worker {worker_id} is not assigned to {date.strftime('%Y-%m-%d')}")
