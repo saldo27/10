@@ -1434,7 +1434,12 @@ class ScheduleBuilder:
                     
                     original_W_assignments = list(self.worker_assignments[worker_W_id]); random.shuffle(original_W_assignments)
                     for date_conflict in original_W_assignments:
-                        if (worker_W_id, date_conflict) in self._locked_mandatory: continue
+                        # CRITICAL: Never swap/move mandatory assignments
+                        if self._is_mandatory(worker_W_id, date_conflict):
+                            continue
+                        # Legacy check for locked mandatory
+                        if (worker_W_id, date_conflict) in self._locked_mandatory: 
+                            continue
                         try: 
                             post_conflict = self.schedule[date_conflict].index(worker_W_id)
                         except (ValueError, KeyError, IndexError): 
@@ -1510,7 +1515,15 @@ class ScheduleBuilder:
         Finds a worker (X) who can take the shift at (conflict_date, conflict_post),
         ensuring they are not worker_W_id and not already assigned on that date.
         UPDATED: Now prioritizes workers based on their target_shifts deficit.
+        
+        CRITICAL: If conflict_date is a MANDATORY assignment for worker_W_id,
+        NO swap should be attempted. Return None immediately.
         """
+        # CRITICAL: Check if this is a mandatory assignment - NEVER swap mandatory days
+        if self._is_mandatory(worker_W_id, conflict_date):
+            logging.info(f"BLOCKED swap attempt: {conflict_date.strftime('%Y-%m-%d')} is MANDATORY for worker {worker_W_id}")
+            return None
+        
         potential_X_workers = [
             w_data for w_data in self.scheduler.workers_data 
             if w_data['id'] != worker_W_id and \
@@ -1783,7 +1796,11 @@ class ScheduleBuilder:
                 if weekday not in overloaded_weekdays:
                     continue
                 
-                # Skip mandatory assignments
+                # CRITICAL: Skip mandatory assignments - they cannot be moved
+                if self._is_mandatory(worker_id, date):
+                    continue
+                
+                # Skip locked mandatory assignments (legacy check)
                 if (worker_id, date) in self._locked_mandatory:
                     continue
                 
@@ -2565,10 +2582,15 @@ class ScheduleBuilder:
     def _attempt_special_day_swap(self, special_days, over_worker, under_worker):
         """
         Intenta intercambiar un turno de día especial entre trabajadores
+        
+        CRITICAL: NEVER swaps mandatory assignments - they are immovable
         """
         # Buscar días especiales donde over_worker esté asignado
         over_worker_special_days = []
         for date in special_days:
+            # CRITICAL: Skip mandatory assignments
+            if self._is_mandatory(over_worker, date):
+                continue
             if (date in self.schedule and 
                 date in self.worker_assignments.get(over_worker, set())):
                 over_worker_special_days.append(date)
@@ -2609,10 +2631,18 @@ class ScheduleBuilder:
         
         # Intentar intercambio con días no especiales
         for over_date in over_worker_special_days:
+            # CRITICAL: Double-check mandatory (should already be filtered, but safety first)
+            if self._is_mandatory(over_worker, over_date):
+                continue
+                
             for over_post_idx, assigned_worker in enumerate(self.schedule[over_date]):
                 if assigned_worker == over_worker:
                     # Buscar un día no especial donde under_worker esté asignado
                     for date in self.schedule.keys():  # Usar las fechas del schedule en lugar de self.periods
+                        # CRITICAL: Skip mandatory assignments for under_worker too
+                        if self._is_mandatory(under_worker, date):
+                            continue
+                            
                         if (date not in special_days and 
                             date in self.worker_assignments.get(under_worker, set())):
                             for under_post_idx, under_assigned in enumerate(self.schedule.get(date, [])):
@@ -3211,6 +3241,10 @@ class ScheduleBuilder:
             for date_to_adjust, last_post_idx_on_day, worker_currently_in_last_post_id in swappable_days_with_last_post_info:
                 worker_A_id = str(worker_currently_in_last_post_id)
                 worker_A_deviation = worker_deviation.get(worker_A_id, 0)
+                
+                # CRITICAL: Never swap mandatory assignments
+                if self._is_mandatory(worker_A_id, date_to_adjust):
+                    continue
 
                 # Only try to swap if this worker is overloaded
                 if worker_A_deviation > balance_tolerance:
@@ -3238,6 +3272,10 @@ class ScheduleBuilder:
                     potential_swap_partners.sort(key=lambda x: x[2])
 
                     for worker_B_id, worker_B_original_post_idx, worker_B_deviation in potential_swap_partners:
+                        # CRITICAL: Never swap mandatory assignments
+                        if self._is_mandatory(worker_B_id, date_to_adjust):
+                            continue
+                            
                         # Check if this swap would improve overall balance
                         new_A_deviation = worker_A_deviation - 1  # A loses a last post
                         new_B_deviation = worker_B_deviation + 1  # B gains a last post
