@@ -798,21 +798,57 @@ class ScheduleBuilder:
         return score
     
     def _calculate_overall_target_score(self, worker_id, worker_config, relaxation_level):
-        """Calculate score based on overall target shifts"""
+        """
+        Calculate score based on overall target shifts with ±8% tolerance enforcement.
+        
+        This method now enforces the ±8% tolerance during assignment to prevent
+        violations from occurring in the first place.
+        """
         current_total_shifts = len(self.worker_assignments.get(worker_id, set()))
         overall_target_shifts = worker_config.get('target_shifts', 0) if worker_config else 0
         
-        # Check if exceeding overall target
-        if current_total_shifts + 1 > overall_target_shifts and overall_target_shifts > 0:
-            if relaxation_level < 1:
+        if overall_target_shifts <= 0:
+            return 0
+        
+        # Calculate ±8% tolerance bounds
+        tolerance = 0.08
+        tolerance_amount = overall_target_shifts * tolerance
+        min_allowed = max(0, int(overall_target_shifts - tolerance_amount))
+        max_allowed = int(overall_target_shifts + tolerance_amount + 0.5)  # Round up
+        
+        # Count after potential assignment
+        shifts_after_assignment = current_total_shifts + 1
+        
+        # STRICT: Block assignments that would violate ±8% tolerance
+        if shifts_after_assignment > max_allowed:
+            if relaxation_level < 2:
+                # Hard block at relaxation levels 0 and 1
+                logging.debug(f"Worker {worker_id}: BLOCKED - would exceed +8% tolerance "
+                            f"({shifts_after_assignment} > {max_allowed}, target: {overall_target_shifts})")
                 return float('-inf')
             else:
-                penalty = (current_total_shifts + 1 - overall_target_shifts) * 1500
+                # At highest relaxation, allow with severe penalty
+                excess = shifts_after_assignment - max_allowed
+                penalty = excess * 5000  # Very heavy penalty
+                logging.debug(f"Worker {worker_id}: Heavy penalty for exceeding tolerance at relaxation=2 "
+                            f"(penalty: {penalty})")
                 return -penalty
-        else:
-            # Bonus for being under overall target
-            bonus = (overall_target_shifts - (current_total_shifts + 1)) * 500
+        
+        # Encourage workers below target, prioritize those furthest from target
+        if shifts_after_assignment < overall_target_shifts:
+            deficit = overall_target_shifts - shifts_after_assignment
+            # Higher bonus for workers further from target
+            bonus = deficit * 1000
             return bonus
+        elif shifts_after_assignment == overall_target_shifts:
+            # Good - exactly at target
+            return 500
+        else:
+            # Above target but within tolerance
+            excess = shifts_after_assignment - overall_target_shifts
+            # Small penalty, but still allowed
+            penalty = excess * 200
+            return -penalty
     
     def _check_gap_constraints(self, worker, date, relaxation_level):
         """Check gap constraints between assignments"""
@@ -975,17 +1011,77 @@ class ScheduleBuilder:
             return float('-inf')
     
     def _calculate_additional_scoring_factors(self, worker, date, relaxation_level):
-        """Calculate additional scoring factors like weekend balance and weekly distribution"""
+        """
+        Calculate additional scoring factors like weekend balance and weekly distribution.
+        Now includes ±8% tolerance validation for weekend shifts.
+        """
         worker_id = worker['id']
         score = 0
         
-        # Weekend Balance Score
+        # Weekend Balance Score with ±8% tolerance enforcement
         if self._is_weekend_or_holiday(date):
-            special_day_assignments = sum(
+            # Count current weekend assignments
+            weekend_assignments = sum(
                 1 for d in self.worker_assignments[worker_id]
                 if self._is_weekend_or_holiday(d)
             )
-            score -= special_day_assignments * 300 
+            
+            # Calculate weekend target based on overall target
+            worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
+            if worker_config:
+                total_target = worker_config.get('target_shifts', 0)
+                if total_target > 0:
+                    # Estimate weekend percentage (approximately 3/7 days are Fri-Sun)
+                    weekend_percentage = 3.0 / 7.0
+                    weekend_target = total_target * weekend_percentage
+                    
+                    # Calculate ±8% tolerance for weekends
+                    tolerance = 0.08
+                    tolerance_amount = weekend_target * tolerance
+                    min_weekend_allowed = max(0, int(weekend_target - tolerance_amount))
+                    max_weekend_allowed = int(weekend_target + tolerance_amount + 0.5)
+                    
+                    # Count after potential assignment
+                    weekend_after = weekend_assignments + 1
+                    
+                    # STRICT: Block weekend assignments that would violate ±8% tolerance
+                    if weekend_after > max_weekend_allowed:
+                        if relaxation_level < 2:
+                            logging.debug(f"Worker {worker_id}: BLOCKED weekend - would exceed +8% tolerance "
+                                        f"({weekend_after} > {max_weekend_allowed}, target: {weekend_target:.1f})")
+                            return float('-inf')
+                        else:
+                            # At highest relaxation, allow with severe penalty
+                            excess = weekend_after - max_weekend_allowed
+                            penalty = excess * 8000  # Very heavy penalty for weekend violations
+                            score -= penalty
+                    elif weekend_after < weekend_target:
+                        # Bonus for workers below weekend target
+                        deficit = weekend_target - weekend_after
+                        score += deficit * 800
+                    else:
+                        # Small penalty for being above target but within tolerance
+                        if weekend_after > weekend_target:
+                            excess = weekend_after - weekend_target
+                            score -= excess * 300
+            else:
+                # No config, use simple penalty
+                score -= weekend_assignments * 300
+        else:
+            # For non-weekend days, check if worker is below weekend target
+            # and give small penalty to encourage weekend assignments
+            weekend_assignments = sum(
+                1 for d in self.worker_assignments[worker_id]
+                if self._is_weekend_or_holiday(d)
+            )
+            worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
+            if worker_config:
+                total_target = worker_config.get('target_shifts', 0)
+                if total_target > 0:
+                    weekend_percentage = 3.0 / 7.0
+                    weekend_target = total_target * weekend_percentage
+                    if weekend_assignments < weekend_target * 0.8:  # If significantly below weekend target
+                        score -= 200  # Small penalty for non-weekend when should do more weekends
 
         # Weekly Balance Score - avoid concentration in some weeks
         week_number = date.isocalendar()[1]
