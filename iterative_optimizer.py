@@ -1355,40 +1355,59 @@ class IterativeOptimizer:
                         assignments = optimized_schedule[date_key_try]
                         workers = assignments[shift_type_try]
                         
-                        # Try to find a valid alternative worker
-                        valid_alternatives = []
+                        # Try to find valid alternative workers - PRIORITIZE those with DEFICIT
+                        valid_alternatives_with_priority = []
                         for candidate in worker_names:
                             if candidate != worker:
                                 # Strict constraint check - respect 7/14 pattern
                                 if self._can_worker_take_shift(candidate, date_key_try, shift_type_try, optimized_schedule, workers_data):
-                                    valid_alternatives.append(candidate)
+                                    # Calculate candidate's current deviation to prioritize those with deficit
+                                    candidate_data = next((w for w in workers_data if w.get('id') == candidate or f"Worker {w.get('id')}" == candidate), None)
+                                    if candidate_data:
+                                        target = candidate_data.get('target_shifts', 0)
+                                        current = self._count_worker_shifts(candidate, optimized_schedule)
+                                        deficit = target - current  # Positive if under target
+                                        valid_alternatives_with_priority.append((candidate, deficit))
                         
-                        if valid_alternatives:
-                            # Prefer workers with fewer shifts (basic load balancing)
-                            alternative_worker = valid_alternatives[0]
+                        if valid_alternatives_with_priority:
+                            # Sort by deficit (descending) - workers with largest deficit first
+                            valid_alternatives_with_priority.sort(key=lambda x: x[1], reverse=True)
+                            alternative_worker = valid_alternatives_with_priority[0][0]
+                            deficit_amount = valid_alternatives_with_priority[0][1]
+                            
                             workers.remove(worker)
                             workers.append(alternative_worker)
                             forced_changes += 1
                             redistributed_count += 1
-                            logging.info(f"      ✅ FORCED: {shift_type_try} from {worker} to {alternative_worker} on {date_key_try}")
+                            logging.info(f"      ✅ FORCED: {shift_type_try} from {worker} to {alternative_worker} (deficit: {deficit_amount}) on {date_key_try}")
                     
                     elif format_type == 'list':
                         assignments = optimized_schedule[date_key_try]
                         
-                        # Try constraint-aware replacement
-                        valid_alternatives = []
+                        # Try constraint-aware replacement - PRIORITIZE workers with DEFICIT
+                        valid_alternatives_with_priority = []
                         for candidate in worker_names:
                             if candidate != worker:
                                 if self._can_worker_take_shift(candidate, date_key_try, "Position", optimized_schedule, workers_data):
-                                    valid_alternatives.append(candidate)
+                                    # Calculate candidate's current deviation
+                                    candidate_data = next((w for w in workers_data if w.get('id') == candidate or f"Worker {w.get('id')}" == candidate), None)
+                                    if candidate_data:
+                                        target = candidate_data.get('target_shifts', 0)
+                                        current = self._count_worker_shifts(candidate, optimized_schedule)
+                                        deficit = target - current
+                                        valid_alternatives_with_priority.append((candidate, deficit))
                         
-                        if valid_alternatives:
-                            alternative_worker = valid_alternatives[0]
+                        if valid_alternatives_with_priority:
+                            # Sort by deficit (descending) - prioritize workers furthest below target
+                            valid_alternatives_with_priority.sort(key=lambda x: x[1], reverse=True)
+                            alternative_worker = valid_alternatives_with_priority[0][0]
+                            deficit_amount = valid_alternatives_with_priority[0][1]
+                            
                             idx = assignments.index(worker)
                             assignments[idx] = alternative_worker
                             forced_changes += 1
                             redistributed_count += 1
-                            logging.info(f"      ✅ FORCED: Position {idx} from {worker} to {alternative_worker} on {date_key_try}")
+                            logging.info(f"      ✅ FORCED: Position {idx} from {worker} to {alternative_worker} (deficit: {deficit_amount}) on {date_key_try}")
                 
                 if redistributed_count > 0:
                     logging.info(f"      ✅ Successfully redistributed {redistributed_count} shifts from {worker}")
@@ -1479,6 +1498,33 @@ class IterativeOptimizer:
         iterations = len(self.optimization_history)
         
         return max(0, (initial_violations - current_violations) / iterations)
+    
+    def _count_worker_shifts(self, worker_name: str, schedule: Dict) -> int:
+        """
+        Count total shifts assigned to a worker in the schedule.
+        
+        Args:
+            worker_name: Name of the worker (e.g., "Worker 12" or "12")
+            schedule: Schedule dictionary
+            
+        Returns:
+            int: Number of shifts assigned to this worker
+        """
+        count = 0
+        try:
+            for date_key, assignments in schedule.items():
+                if isinstance(assignments, dict):
+                    # Dictionary format: {date: {'Morning': [workers], 'Afternoon': [workers]}}
+                    for shift_type, workers in assignments.items():
+                        if worker_name in workers:
+                            count += 1
+                elif isinstance(assignments, list):
+                    # List format: {date: [worker1, worker2, worker3]}
+                    count += assignments.count(worker_name)
+        except Exception as e:
+            logging.error(f"Error counting shifts for {worker_name}: {e}")
+        
+        return count
     
     def _create_validation_report(self, validator, current_schedule: Dict) -> Dict:
         """
