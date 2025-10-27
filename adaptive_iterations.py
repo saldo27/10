@@ -93,20 +93,20 @@ class AdaptiveIterationManager:
             }
         elif complexity < 15000:
             base_config = {
-                'main_loops': 40,
-                'fill_attempts': 30,
-                'balance_iterations': 28,
-                'weekend_passes': 18,
-                'post_adjustment_iterations': 15
+                'main_loops': 75,
+                'fill_attempts': 60,
+                'balance_iterations': 40,
+                'weekend_passes': 30,
+                'post_adjustment_iterations': 30
             }
         else:
             # Enhanced: Apply dynamic multipliers for complex schedules
             base_config = {
-                'main_loops': 60,
-                'fill_attempts': 50,
-                'balance_iterations': 35,
-                'weekend_passes': 28,
-                'post_adjustment_iterations': 20
+                'main_loops': 100,
+                'fill_attempts': 80,
+                'balance_iterations': 50,
+                'weekend_passes': 40,
+                'post_adjustment_iterations': 35
             }
         
         # Apply historical learning adjustments

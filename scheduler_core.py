@@ -724,12 +724,13 @@ class SchedulerCore:
             )
             
             # Check if optimization improved the schedule
-            if optimization_result.success and optimization_result.schedule:
+            # CRITICAL: Always try the best result, not just if "success"
+            if optimization_result.schedule:
                 # Apply optimized schedule temporarily to check
                 original_schedule = self.scheduler.schedule
                 self.scheduler.schedule = optimization_result.schedule
                 
-                # Verify improved tolerance
+                # Verify tolerance after optimization
                 new_outside_general = self.tolerance_validator.get_workers_outside_tolerance(
                     is_weekend_only=False
                 )
@@ -739,28 +740,34 @@ class SchedulerCore:
                 
                 new_total_violations = len(new_outside_general) + len(new_outside_weekend)
                 
+                logging.info(f"Optimization completed after {optimization_result.iteration} iterations")
+                logging.info(f"Result: {total_violations} → {new_total_violations} violations")
+                
                 if new_total_violations < total_violations:
-                    logging.info(f"✅ Optimization successful! Violations reduced: {total_violations} → {new_total_violations}")
-                    logging.info(f"  General violations: {len(outside_general)} → {len(new_outside_general)}")
-                    logging.info(f"  Weekend violations: {len(outside_weekend)} → {len(new_outside_weekend)}")
+                    improvement = total_violations - new_total_violations
+                    improvement_pct = (improvement / total_violations * 100) if total_violations > 0 else 0
+                    logging.info(f"✅ Optimization IMPROVED schedule! Reduced {improvement} violations ({improvement_pct:.1f}% improvement)")
+                    logging.info(f"  General: {len(outside_general)} → {len(new_outside_general)}")
+                    logging.info(f"  Weekend: {len(outside_weekend)} → {len(new_outside_weekend)}")
                     
                     # Keep optimized schedule (already applied)
-                    # Resync tracking data
                     self.scheduler._synchronize_tracking_data()
-                    
                     logging.info("Optimized schedule applied successfully")
+                    
                 elif new_total_violations == total_violations:
-                    logging.info(f"Optimization did not reduce violations (still {total_violations})")
-                    logging.info("Keeping original schedule")
-                    self.scheduler.schedule = original_schedule
+                    logging.info(f"📊 Optimization maintained violations at {total_violations} (no change)")
+                    # Keep it anyway - at least redistributions may have balanced better
+                    self.scheduler._synchronize_tracking_data()
+                    logging.info("Keeping optimized schedule (same violations but may be better balanced)")
+                    
                 else:
-                    logging.warning(f"Optimization made things worse: {total_violations} → {new_total_violations}")
-                    logging.info("Keeping original schedule")
+                    regression = new_total_violations - total_violations
+                    logging.warning(f"⚠️ Optimization WORSENED schedule: +{regression} violations ({total_violations} → {new_total_violations})")
+                    logging.info("Reverting to original schedule")
                     self.scheduler.schedule = original_schedule
             else:
-                logging.info(f"Optimization completed in {optimization_result.iteration} iterations")
-                logging.info(f"Final violations: {optimization_result.total_violations}")
-                logging.info("No optimization improvements found, keeping original schedule")
+                logging.warning("No optimized schedule available from optimizer")
+                logging.info("Keeping original schedule")
             
             # Final tolerance report
             final_outside_general = self.tolerance_validator.get_workers_outside_tolerance(
