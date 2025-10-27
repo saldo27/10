@@ -14,6 +14,8 @@ from exceptions import SchedulerError
 from optimization_metrics import OptimizationMetrics
 from operation_prioritizer import OperationPrioritizer
 from progress_monitor import ProgressMonitor
+from iterative_optimizer import IterativeOptimizer
+from shift_tolerance_validator import ShiftToleranceValidator
 
 
 class SchedulerCore:
@@ -40,7 +42,11 @@ class SchedulerCore:
         self.prioritizer = OperationPrioritizer(scheduler, self.metrics)
         self.progress_monitor = None  # Will be initialized in orchestrate_schedule_generation
         
-        logging.info("SchedulerCore initialized with enhanced optimization systems")
+        # Initialize tolerance validation and iterative optimization
+        self.tolerance_validator = ShiftToleranceValidator(scheduler)
+        self.iterative_optimizer = IterativeOptimizer(max_iterations=20, tolerance=0.08)
+        
+        logging.info("SchedulerCore initialized with enhanced optimization systems and tolerance validation")
     
     def orchestrate_schedule_generation(self, max_improvement_loops: int = 70) -> bool:
         """
@@ -472,8 +478,122 @@ class SchedulerCore:
             # Log final summary
             self.scheduler.log_schedule_summary("Final Generated Schedule")
             
+            # Apply iterative tolerance optimization to meet ±8% requirements
+            logging.info("=" * 80)
+            logging.info("APPLYING ITERATIVE TOLERANCE OPTIMIZATION")
+            logging.info("=" * 80)
+            self._apply_tolerance_optimization()
+            
             return True
             
         except Exception as e:
             logging.error(f"Error during final validation: {str(e)}", exc_info=True)
             return False
+    
+    def _apply_tolerance_optimization(self):
+        """
+        Apply iterative optimization to meet ±8% tolerance requirements.
+        
+        This method uses the IterativeOptimizer to automatically correct tolerance violations
+        by redistributing shifts between workers who are over/under their target allocations.
+        """
+        try:
+            # Check initial tolerance violations
+            outside_general = self.tolerance_validator.get_workers_outside_tolerance(
+                self.scheduler.schedule, shift_type='general'
+            )
+            outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(
+                self.scheduler.schedule, shift_type='weekend'
+            )
+            
+            total_violations = len(outside_general) + len(outside_weekend)
+            
+            logging.info(f"Initial tolerance check:")
+            logging.info(f"  Workers outside ±8% tolerance (general): {len(outside_general)}")
+            logging.info(f"  Workers outside ±8% tolerance (weekend): {len(outside_weekend)}")
+            logging.info(f"  Total violations: {total_violations}")
+            
+            if total_violations == 0:
+                logging.info("✅ All workers already within ±8% tolerance!")
+                return
+            
+            # Log violations details
+            if outside_general:
+                logging.info("General shift violations:")
+                for worker_id, info in list(outside_general.items())[:5]:  # Show first 5
+                    logging.info(f"  - {worker_id}: {info['assigned']} assigned (target: {info['target']}, "
+                               f"deviation: {info['deviation']:+.1f}%)")
+            
+            if outside_weekend:
+                logging.info("Weekend shift violations:")
+                for worker_id, info in list(outside_weekend.items())[:5]:  # Show first 5
+                    logging.info(f"  - {worker_id}: {info['assigned']} assigned (target: {info['target']}, "
+                               f"deviation: {info['deviation']:+.1f}%)")
+            
+            # Apply iterative optimization
+            logging.info(f"Starting iterative optimization (max {self.iterative_optimizer.max_iterations} iterations)...")
+            
+            optimized_schedule = self.iterative_optimizer.optimize(
+                schedule=self.scheduler.schedule,
+                workers_data=self.workers_data,
+                schedule_config=self.config,
+                scheduler_core=self
+            )
+            
+            # Check if optimization improved the schedule
+            if optimized_schedule and optimized_schedule != self.scheduler.schedule:
+                # Verify improved tolerance
+                new_outside_general = self.tolerance_validator.get_workers_outside_tolerance(
+                    optimized_schedule, shift_type='general'
+                )
+                new_outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(
+                    optimized_schedule, shift_type='weekend'
+                )
+                
+                new_total_violations = len(new_outside_general) + len(new_outside_weekend)
+                
+                if new_total_violations < total_violations:
+                    logging.info(f"✅ Optimization successful! Violations reduced: {total_violations} → {new_total_violations}")
+                    logging.info(f"  General violations: {len(outside_general)} → {len(new_outside_general)}")
+                    logging.info(f"  Weekend violations: {len(outside_weekend)} → {len(new_outside_weekend)}")
+                    
+                    # Apply optimized schedule
+                    self.scheduler.schedule = optimized_schedule
+                    # Resync tracking data
+                    self.scheduler._synchronize_tracking_data()
+                    
+                    logging.info("Optimized schedule applied successfully")
+                elif new_total_violations == total_violations:
+                    logging.info(f"Optimization did not reduce violations (still {total_violations})")
+                    logging.info("Keeping original schedule")
+                else:
+                    logging.warning(f"Optimization made things worse: {total_violations} → {new_total_violations}")
+                    logging.info("Keeping original schedule")
+            else:
+                logging.info("No optimization improvements found, keeping original schedule")
+            
+            # Final tolerance report
+            final_outside_general = self.tolerance_validator.get_workers_outside_tolerance(
+                self.scheduler.schedule, shift_type='general'
+            )
+            final_outside_weekend = self.tolerance_validator.get_workers_outside_tolerance(
+                self.scheduler.schedule, shift_type='weekend'
+            )
+            
+            final_total = len(final_outside_general) + len(final_outside_weekend)
+            
+            logging.info("=" * 80)
+            logging.info("TOLERANCE OPTIMIZATION COMPLETE")
+            logging.info(f"Final violations: {final_total}")
+            logging.info(f"  General: {len(final_outside_general)}")
+            logging.info(f"  Weekend: {len(final_outside_weekend)}")
+            
+            if final_total == 0:
+                logging.info("🎯 SUCCESS: All workers within ±8% tolerance!")
+            else:
+                logging.warning(f"⚠️  {final_total} workers still outside tolerance")
+            logging.info("=" * 80)
+            
+        except Exception as e:
+            logging.error(f"Error during tolerance optimization: {e}", exc_info=True)
+            logging.info("Continuing with original schedule")
