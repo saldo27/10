@@ -1268,8 +1268,11 @@ class IterativeOptimizer:
     def _apply_forced_redistribution(self, schedule: Dict, violations: List[Dict], 
                                    workers_data: List[Dict], schedule_config: Dict) -> Dict:
         """
-        Apply aggressive forced redistribution when normal strategies fail.
+        Apply ULTRA AGGRESSIVE forced redistribution when normal strategies fail.
         This method bypasses some constraints to force progress on violations.
+        
+        CRITICAL: With high violation counts (>20), we MUST be extremely aggressive
+        and override pattern constraints that are blocking redistribution.
         """
         logging.info(f"   🚨 Forced redistribution for {len(violations)} violations")
         
@@ -1298,87 +1301,99 @@ class IterativeOptimizer:
         
         forced_changes = 0
         
+        # ULTRA AGGRESSIVE forced redistribution limit
+        # Scale with violation count - we NEED to fix these violations
+        max_forced = len(violations) * 10  # 10 redistributions per violation
+        if len(violations) > 20:
+            max_forced = len(violations) * 15  # Even more aggressive for high counts
+            logging.warning(f"⚠️ EXTREME FORCED MODE: {len(violations)} violations, allowing {max_forced} forced redistributions")
+        else:
+            logging.info(f"   📊 Allowing up to {max_forced} forced redistributions")
+        
         # Force general shift redistributions - WITH constraint checking
         for violation in general_violations:
-            if forced_changes >= 10:  # Limit forced changes
+            if forced_changes >= max_forced:
                 break
                 
             worker = violation['worker']
             deviation = violation.get('deviation_percentage', 0)
             
-            if abs(deviation) > 15:  # Only for significant violations
+            if abs(deviation) > 8:  # Reduced from 15 - ANY violation beyond tolerance needs fixing
                 logging.info(f"      🚨 FORCING redistribution for {worker} (deviation: {deviation:.1f}%)")
                 
                 # Find any shift assigned to this worker and try to reassign it
-                reassigned = False
-                for date_key, assignments in optimized_schedule.items():
-                    if reassigned or forced_changes >= 10:
+                # TRY MULTIPLE SHIFTS - don't give up after first attempt
+                shifts_to_try = []
+                for date_key_scan, assignments_scan in optimized_schedule.items():
+                    if isinstance(assignments_scan, dict):
+                        for shift_type_scan, workers_scan in assignments_scan.items():
+                            if worker in workers_scan:
+                                # Skip mandatory shifts
+                                if not self._is_mandatory_shift(worker, date_key_scan, workers_data):
+                                    shifts_to_try.append((date_key_scan, shift_type_scan, 'dict'))
+                    elif isinstance(assignments_scan, list):
+                        if worker in assignments_scan:
+                            # Skip mandatory shifts
+                            if not self._is_mandatory_shift(worker, date_key_scan, workers_data):
+                                shifts_to_try.append((date_key_scan, None, 'list'))
+                
+                # Shuffle to avoid always trying the same dates
+                import random
+                random.shuffle(shifts_to_try)
+                
+                # Try to redistribute ANY of the shifts
+                redistributed_count = 0
+                max_per_worker = 5  # Try to redistribute up to 5 shifts per worker with high deviation
+                
+                for shift_info in shifts_to_try:
+                    if redistributed_count >= max_per_worker or forced_changes >= max_forced:
                         break
+                    
+                    date_key_try, shift_type_try, format_type = shift_info
+                    
+                    if format_type == 'dict':
+                        assignments = optimized_schedule[date_key_try]
+                        workers = assignments[shift_type_try]
                         
-                    if isinstance(assignments, dict):
-                        for shift_type, workers in assignments.items():
-                            if worker in workers and len(workers) > 1:
-                                # CRITICAL: Skip mandatory shifts - they cannot be forced
-                                if self._is_mandatory_shift(worker, date_key, workers_data):
-                                    logging.debug(f"      🔒 SKIPPING mandatory shift for {worker} on {date_key} - cannot force")
-                                    continue
-                                
-                                # Try to find a valid alternative worker
-                                valid_alternatives = []
-                                for candidate in worker_names:
-                                    if candidate != worker:
-                                        # Quick constraint check for 7/14 day pattern
-                                        if self._can_worker_take_shift(candidate, date_key, shift_type, optimized_schedule, workers_data):
-                                            valid_alternatives.append(candidate)
-                                
-                                if valid_alternatives:
-                                    # Prefer workers with fewer shifts (basic load balancing)
-                                    alternative_worker = valid_alternatives[0]  # For now, take first valid
-                                    workers.remove(worker)
-                                    workers.append(alternative_worker)
-                                    forced_changes += 1
-                                    reassigned = True
-                                    logging.info(f"      ✅ FORCED: {shift_type} from {worker} to {alternative_worker} on {date_key} (constraint-aware)")
-                                    break
-                                else:
-                                    # Last resort - force assignment ignoring some constraints
-                                    alternative_worker = random.choice([w for w in worker_names if w != worker])
-                                    workers.remove(worker)
-                                    workers.append(alternative_worker)
-                                    forced_changes += 1
-                                    reassigned = True
-                                    logging.info(f"      💥 FORCED: {shift_type} from {worker} to {alternative_worker} on {date_key} (constraint-ignored)")
-                                    break
-                    elif isinstance(assignments, list):
-                        if worker in assignments:
-                            # CRITICAL: Skip mandatory shifts - they cannot be forced
-                            if self._is_mandatory_shift(worker, date_key, workers_data):
-                                logging.debug(f"      🔒 SKIPPING mandatory shift for {worker} on {date_key} - cannot force")
-                                continue
-                            
-                            # Try constraint-aware replacement
-                            valid_alternatives = []
-                            for candidate in worker_names:
-                                if candidate != worker:
-                                    if self._can_worker_take_shift(candidate, date_key, "Position", optimized_schedule, workers_data):
-                                        valid_alternatives.append(candidate)
-                            
-                            if valid_alternatives:
-                                alternative_worker = valid_alternatives[0]
-                                idx = assignments.index(worker)
-                                assignments[idx] = alternative_worker
-                                forced_changes += 1
-                                reassigned = True
-                                logging.info(f"      ✅ FORCED: Position {idx} from {worker} to {alternative_worker} on {date_key} (constraint-aware)")
-                            else:
-                                # Last resort
-                                alternative_worker = random.choice([w for w in worker_names if w != worker])
-                                idx = assignments.index(worker)
-                                assignments[idx] = alternative_worker
-                                forced_changes += 1
-                                reassigned = True
-                                logging.info(f"      💥 FORCED: Position {idx} from {worker} to {alternative_worker} on {date_key} (constraint-ignored)")
-                            break
+                        # Try to find a valid alternative worker
+                        valid_alternatives = []
+                        for candidate in worker_names:
+                            if candidate != worker:
+                                # Strict constraint check - respect 7/14 pattern
+                                if self._can_worker_take_shift(candidate, date_key_try, shift_type_try, optimized_schedule, workers_data):
+                                    valid_alternatives.append(candidate)
+                        
+                        if valid_alternatives:
+                            # Prefer workers with fewer shifts (basic load balancing)
+                            alternative_worker = valid_alternatives[0]
+                            workers.remove(worker)
+                            workers.append(alternative_worker)
+                            forced_changes += 1
+                            redistributed_count += 1
+                            logging.info(f"      ✅ FORCED: {shift_type_try} from {worker} to {alternative_worker} on {date_key_try}")
+                    
+                    elif format_type == 'list':
+                        assignments = optimized_schedule[date_key_try]
+                        
+                        # Try constraint-aware replacement
+                        valid_alternatives = []
+                        for candidate in worker_names:
+                            if candidate != worker:
+                                if self._can_worker_take_shift(candidate, date_key_try, "Position", optimized_schedule, workers_data):
+                                    valid_alternatives.append(candidate)
+                        
+                        if valid_alternatives:
+                            alternative_worker = valid_alternatives[0]
+                            idx = assignments.index(worker)
+                            assignments[idx] = alternative_worker
+                            forced_changes += 1
+                            redistributed_count += 1
+                            logging.info(f"      ✅ FORCED: Position {idx} from {worker} to {alternative_worker} on {date_key_try}")
+                
+                if redistributed_count > 0:
+                    logging.info(f"      ✅ Successfully redistributed {redistributed_count} shifts from {worker}")
+                else:
+                    logging.warning(f"      ⚠️ Could not redistribute any shifts from {worker} - all blocked by constraints")
         
         logging.info(f"   ✅ Made {forced_changes} forced redistributions")
         return optimized_schedule
