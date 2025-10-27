@@ -1575,7 +1575,7 @@ class ScheduleBuilder:
                         
                         # Assign worker
                         self.schedule[date_val][post_val] = worker_id
-                        self.worker_assignments[worker_id].add((date_val, post_val))
+                        self.worker_assignments[worker_id].add(date_val)  # FIXED: Only add date, not (date, post)
                         
                         filled_this_attempt += 1
                         made_change = True
