@@ -194,7 +194,10 @@ class IterativeOptimizer:
             })
             
             # Enhanced convergence checks (more lenient for weekend-only mode)
-            if self._should_stop_optimization(iteration, total_violations):
+            should_stop = self._should_stop_optimization(iteration, total_violations)
+            logging.debug(f"   🔍 Stop check: should_stop={should_stop}, stagnation={self.stagnation_counter}/{self.convergence_threshold}, violations={total_violations}")
+            
+            if should_stop:
                 if self.weekend_only_mode and self.stagnation_counter < self.convergence_threshold:
                     logging.info(f"   ⏳ Weekend-only mode active - continuing optimization...")
                 else:
