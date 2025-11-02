@@ -106,6 +106,10 @@ class IterativeOptimizer:
         best_schedule = copy.deepcopy(schedule)
         best_violations = float('inf')
         
+        # DEBUG: Verify max_iterations value before loop
+        logging.info(f"🔍 DEBUG: About to start loop with range(1, {self.max_iterations} + 1) = range(1, {self.max_iterations + 1})")
+        logging.info(f"🔍 DEBUG: This should generate iterations: {list(range(1, min(self.max_iterations + 1, 6)))[:5]}...")
+        
         for iteration in range(1, self.max_iterations + 1):
             logging.info(f"🔄 Optimization iteration {iteration}/{self.max_iterations}")
             logging.info(f"   📊 State: stagnation={self.stagnation_counter}, best_violations={best_violations}")
@@ -223,6 +227,12 @@ class IterativeOptimizer:
             except Exception as e:
                 logging.error(f"❌ Error in iteration {iteration}: {e}", exc_info=True)
                 continue
+            
+            # DEBUG: Confirm we're about to loop back
+            logging.info(f"🔁 DEBUG: End of iteration {iteration}, about to loop back to iteration {iteration + 1}")
+        
+        # DEBUG: Confirm loop has exited
+        logging.info(f"🏁 DEBUG: Loop has exited after completing all iterations or breaking early")
         
         # Return best result found
         if self.best_result:
