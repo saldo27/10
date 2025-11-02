@@ -108,6 +108,7 @@ class IterativeOptimizer:
         
         for iteration in range(1, self.max_iterations + 1):
             logging.info(f"🔄 Optimization iteration {iteration}/{self.max_iterations}")
+            logging.info(f"   📊 State: stagnation={self.stagnation_counter}, best_violations={best_violations}")
             
             # Validate current schedule using existing methods
             validation_report = self._create_validation_report(validator, current_schedule)
@@ -202,24 +203,26 @@ class IterativeOptimizer:
             
             # Enhanced convergence checks (more lenient for weekend-only mode)
             should_stop = self._should_stop_optimization(iteration, total_violations)
-            logging.debug(f"   🔍 Stop check: should_stop={should_stop}, stagnation={self.stagnation_counter}/{self.convergence_threshold}, violations={total_violations}")
+            logging.info(f"   🔍 Stop check: should_stop={should_stop}, stagnation={self.stagnation_counter}/{self.convergence_threshold}, violations={total_violations}")
             
             if should_stop:
                 if self.weekend_only_mode and self.stagnation_counter < self.convergence_threshold:
                     logging.info(f"   ⏳ Weekend-only mode active - continuing optimization...")
                 else:
-                    logging.info(f"🛑 Early convergence detected - stopping optimization")
+                    logging.info(f"🛑 Early convergence detected - stopping optimization at iteration {iteration}")
                     break
             
             # Apply optimization strategies
             try:
                 # Calculate optimization intensity based on stagnation
                 optimization_intensity = min(1.0, 0.3 + (self.stagnation_counter * 0.2))
+                logging.info(f"   🎚️ Optimization intensity: {optimization_intensity:.2f}")
                 
                 current_schedule = self._apply_optimization_strategies(
                     current_schedule, validation_report, scheduler_core, 
                     workers_data, schedule_config, iteration, optimization_intensity
                 )
+                logging.info(f"   ✅ Optimization strategies applied, continuing to next iteration...")
             except Exception as e:
                 logging.error(f"❌ Error in iteration {iteration}: {e}", exc_info=True)
                 continue
