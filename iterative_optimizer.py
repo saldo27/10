@@ -71,6 +71,13 @@ class IterativeOptimizer:
         logging.info("🔄 Starting iterative schedule optimization...")
         logging.info(f"Debug: Optimizer called with {len(schedule)} schedule entries and {len(workers_data)} workers")
         
+        # CRITICAL: Reset state for fresh optimization run
+        self.stagnation_counter = 0
+        self.best_result = None
+        self.optimization_history = []
+        self.weekend_only_mode = False
+        logging.info("🔄 Optimizer state reset for new optimization run")
+        
         # Store reference to scheduler for mandatory shift checks
         self.scheduler = getattr(scheduler_core, 'scheduler', None)
         if not self.scheduler:
