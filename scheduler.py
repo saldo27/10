@@ -397,7 +397,14 @@ class Scheduler:
             # Reset existing tracking data efficiently
             for worker_id in (w['id'] for w in self.workers_data):
                 self.worker_assignments[worker_id].clear()
-                self.worker_posts[worker_id].clear()
+                
+                # CRITICAL FIX: Ensure worker_posts is a set, not dict
+                if not isinstance(self.worker_posts[worker_id], set):
+                    logging.warning(f"Correcting worker_posts[{worker_id}] from {type(self.worker_posts[worker_id])} to set")
+                    self.worker_posts[worker_id] = set()
+                else:
+                    self.worker_posts[worker_id].clear()
+                
                 # Reset weekend lists
                 self.worker_weekends[worker_id].clear()
                 # Reset weekday counts
