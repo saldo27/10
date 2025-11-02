@@ -203,14 +203,11 @@ class IterativeOptimizer:
             
             # Enhanced convergence checks (more lenient for weekend-only mode)
             should_stop = self._should_stop_optimization(iteration, total_violations)
-            logging.info(f"   🔍 Stop check: should_stop={should_stop}, stagnation={self.stagnation_counter}/{self.convergence_threshold}, violations={total_violations}")
+            logging.info(f"   🔍 Stop check: should_stop={should_stop}, violations={total_violations}")
             
             if should_stop:
-                if self.weekend_only_mode and self.stagnation_counter < self.convergence_threshold:
-                    logging.info(f"   ⏳ Weekend-only mode active - continuing optimization...")
-                else:
-                    logging.info(f"🛑 Early convergence detected - stopping optimization at iteration {iteration}")
-                    break
+                logging.info(f"🛑 Perfect schedule achieved - stopping optimization at iteration {iteration}")
+                break
             
             # Apply optimization strategies
             try:
@@ -1451,6 +1448,8 @@ class IterativeOptimizer:
         """
         Determine if optimization should stop based on convergence criteria.
         
+        MODIFIED: Only stop if violations reach 0 - always complete all iterations otherwise
+        
         Args:
             iteration: Current iteration number
             current_violations: Current number of violations
@@ -1458,47 +1457,14 @@ class IterativeOptimizer:
         Returns:
             bool: True if optimization should stop
         """
-        # Stop if stagnation threshold reached BUT NOT if there are significant violations
-        if self.stagnation_counter >= self.convergence_threshold:
-            if current_violations > 3:  # Lowered from 5 to be more aggressive
-                # Too many violations - keep going despite stagnation
-                logging.info(f"   ⚠️ Plateau detected but continuing due to violations ({current_violations})")
-                return False
-            elif current_violations > 0 and self.weekend_only_mode:  # Continue if ANY violations in weekend mode
-                # Weekend-only mode with violations - keep going
-                logging.info(f"   ⚠️ Plateau in weekend-only mode but continuing ({current_violations} violations remaining)")
-                return False
-            else:
-                logging.info(f"   🛑 Stopping due to stagnation ({self.stagnation_counter} iterations without improvement)")
-                return True
-        
-        # Stop if violations are acceptably low
-        if current_violations <= 5 and iteration >= 8:  # More lenient criteria
-            logging.info(f"   ✅ Stopping due to acceptable violation level ({current_violations})")
+        # ONLY stop if we reach 0 violations (perfect schedule)
+        if current_violations == 0:
+            logging.info(f"   ✅ Perfect schedule achieved - stopping optimization")
             return True
         
-        # Check improvement rate trend - be more lenient for schedules with significant violations
-        if len(self.optimization_history) >= 5:  # Check more iterations before stopping
-            recent_violations = [h['total_violations'] for h in self.optimization_history[-5:]]
-            # Only stop on plateau if violations are very low OR we've been stuck for many iterations
-            if all(v == recent_violations[0] for v in recent_violations):
-                if current_violations <= 3:  # Very low violations - acceptable to stop
-                    logging.info(f"   🛑 Stopping due to plateau with acceptable violations ({current_violations})")
-                    return True
-                elif len(recent_violations) >= 7:  # Extended plateau
-                    logging.info(f"   🛑 Stopping due to extended plateau (7+ iterations)")
-                    return True
-                else:
-                    logging.info(f"   ⚠️ Plateau detected but continuing due to high violations ({current_violations})")
-                    return False
-        
-        # Dynamic early stopping for very difficult schedules
-        if iteration >= 8 and current_violations > 20:
-            average_improvement = self._calculate_average_improvement()
-            if average_improvement < 0.5:  # Less than 0.5 violations improvement per iteration
-                logging.info(f"   🛑 Stopping due to low improvement rate ({average_improvement:.2f})")
-                return True
-        
+        # Otherwise, ALWAYS continue - let all iterations run
+        # This ensures maximum optimization effort for difficult schedules
+        logging.debug(f"   ⏩ Continuing optimization ({current_violations} violations remaining)")
         return False
     
     def _calculate_average_improvement(self) -> float:
