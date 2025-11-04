@@ -133,14 +133,19 @@ class ScheduleBuilder:
         """
         Activa modo RELAJADO para optimización iterativa.
         
-        Permite relajación progresiva según relaxation_level:
-        - Level 0: +10% target, sin gap reduction, patrón 7/14 estricto
-        - Level 1: +12% target, sin gap reduction, patrón 7/14 con déficit >5
-        - Level 2: +15% target, sin gap reduction, patrón 7/14 con déficit >3
-        - Level 3: +18% target, gap-1 permitido, patrón 7/14 con déficit >1
+        RESTRICCIONES EN MODO RELAJADO:
+        - Target: SIEMPRE +10% máximo (NO aumenta)
+        - Gap: Permite reducción de -1 SOLAMENTE (con déficit ≥3)
+        - Patrón 7/14: Permite violación si déficit >10% del target
+        - Balance: Trabaja con tolerancias ±10% en guardias/mes, weekends
+        
+        NUNCA SE RELAJAN:
+        - Mandatory shifts (siempre protegidos)
+        - Incompatibilidades (siempre bloqueadas)
+        - Days off (nunca se asignan)
         """
         self.use_strict_mode = False
-        logging.info("🔓 RELAXED MODE ENABLED - Progressive constraint relaxation allowed")
+        logging.info("🔓 RELAXED MODE ENABLED - Limited constraint relaxation (±10% tolerance, gap-1)")
     
     def is_strict_mode(self) -> bool:
         """Retorna True si está en modo estricto."""
@@ -986,19 +991,15 @@ class ScheduleBuilder:
         adjusted_target = int(overall_target_shifts * work_percentage / 100)
         
         # Calculate tolerance based on mode and relaxation level
+        # IMPORTANT: Target tolerance is ALWAYS +10% maximum (never increases)
+        # In relaxed mode, we work with ±10% tolerance for balance adjustments
         if self.use_strict_mode:
-            # STRICT: Always +10%
+            # STRICT: Always +10% (upper limit only)
             tolerance = 0.10
         else:
-            # RELAXED: Progressive tolerance
-            if relaxation_level >= 3:
-                tolerance = 0.18  # Level 3: +18%
-            elif relaxation_level >= 2:
-                tolerance = 0.15  # Level 2: +15%
-            elif relaxation_level >= 1:
-                tolerance = 0.12  # Level 1: +12%
-            else:
-                tolerance = 0.10  # Level 0: +10%
+            # RELAXED: Still +10% maximum (never increases)
+            # The relaxation allows ±10% deviations in balance metrics
+            tolerance = 0.10
         
         tolerance_amount = adjusted_target * tolerance
         min_allowed = max(0, int(adjusted_target - tolerance_amount))
@@ -1087,10 +1088,11 @@ class ScheduleBuilder:
         if self.use_strict_mode:
             min_gap = base_min_gap
         else:
-            # RELAXED MODE: Allow gap-1 only at extreme relaxation (level 3+)
-            if relaxation_level >= 3 and target_deficit >= 5:
-                min_gap = max(1, base_min_gap - 1)  # Reduce gap by 1, minimum 1
-                logging.debug(f"RELAXED: Worker {worker_id} gap reduced to {min_gap} (deficit: {target_deficit})")
+            # RELAXED MODE: Allow gap-1 ONLY (never more than -1)
+            # Only if worker has significant deficit
+            if relaxation_level >= 1 and target_deficit >= 3:
+                min_gap = max(1, base_min_gap - 1)  # Reduce gap by 1 ONLY, minimum 1
+                logging.debug(f"RELAXED: Worker {worker_id} gap reduced by 1 to {min_gap} (deficit: {target_deficit})")
             else:
                 min_gap = base_min_gap
         
@@ -1121,15 +1123,13 @@ class ScheduleBuilder:
                     logging.debug(f"STRICT: Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')}")
                     return False
                 
-                # RELAXED MODE: Progressive relaxation based on level and deficit
-                if relaxation_level >= 3 and target_deficit >= 1:
-                    logging.warning(f"⚠️ RELAXED L3: Worker {worker_id} 7/14 pattern override - deficit ({target_deficit})")
-                    continue
-                elif relaxation_level >= 2 and target_deficit >= 3:
-                    logging.warning(f"⚠️ RELAXED L2: Worker {worker_id} 7/14 pattern override - moderate deficit ({target_deficit})")
-                    continue
-                elif relaxation_level >= 1 and target_deficit >= 5:
-                    logging.warning(f"⚠️ RELAXED L1: Worker {worker_id} 7/14 pattern override - high deficit ({target_deficit})")
+                # RELAXED MODE: Allow violation if worker has significant deficit
+                # Work with ±10% tolerance concept: allow if it helps balance
+                deficit_percentage = (target_deficit / max(target_shifts, 1)) * 100 if target_shifts > 0 else 0
+                
+                # Allow 7/14 violation if deficit is significant (>10% of target)
+                if relaxation_level >= 1 and deficit_percentage >= 10:
+                    logging.warning(f"⚠️ RELAXED: Worker {worker_id} 7/14 pattern override - deficit {target_deficit} ({deficit_percentage:.1f}% of target)")
                     continue
                     
                 logging.debug(f"Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}")

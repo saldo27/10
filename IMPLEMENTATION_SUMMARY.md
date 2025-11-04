@@ -41,30 +41,35 @@ self.scheduler.schedule_builder.enable_strict_mode()
 
 ### 🔓 **FASE ITERACIÓN: MODO RELAJADO**
 
-Después del reparto inicial, el sistema permite **relajación progresiva controlada**:
+Después del reparto inicial, el sistema permite **relajación CONTROLADA** con límites estrictos:
 
-#### **Niveles de Relajación:**
+#### **Límites de Relajación:**
 
-| Nivel | Target | Gap | Patrón 7/14 | Mensual | Weekend |
-|-------|--------|-----|-------------|---------|---------|
-| **0** | +10% | Normal | Estricto | ±1 | ±1 |
-| **1** | +12% | Normal | Déficit >5 | ±2 | ±1 |
-| **2** | +15% | Normal | Déficit >3 | ±2 | ±2 |
-| **3** | +18% | gap-1 | Déficit >1 | ±3 | ±2 |
+| Restricción | Modo Estricto | Modo Relajado | Límite |
+|-------------|---------------|---------------|--------|
+| **Target** | +10% | +10% | **NUNCA aumenta** |
+| **Gap** | Normal | gap-1 | **Solo -1** si déficit ≥3 |
+| **Patrón 7/14** | Prohibido | Permitido | Si déficit >10% |
+| **Mensual** | ±1 | ±10% | Tolerancia porcentual |
+| **Weekend** | ±1 | ±10% | Tolerancia porcentual |
 
-#### **Selección automática de nivel:**
+#### **Criterios de relajación:**
 ```python
-def select_relaxation_level(iteration, violations):
-    if violations < 5:
-        return 0  # Mantener estricto
-    elif iteration <= 10 and violations > 20:
-        return 1  # Moderado
-    elif iteration <= 20 and violations > 15:
-        return 2  # Relajado
-    elif violations > 10:
-        return 3  # Extremo
-    else:
-        return 1  # Por defecto moderado
+# Target: SIEMPRE +10% (sin cambios vs modo estricto)
+target_tolerance = 0.10  # FIJO
+
+# Gap: Permite reducción -1 si déficit alto
+if deficit >= 3:
+    allow_gap_reduction = -1  # SOLO -1, no más
+    
+# Patrón 7/14: Permite si déficit crítico
+deficit_percentage = (target - current) / target * 100
+if deficit_percentage > 10:  # >10% del target
+    allow_7_14_violation = True
+    
+# Balance: Tolerancia ±10%
+monthly_tolerance = 0.10  # ±10%
+weekend_tolerance = 0.10  # ±10%
 ```
 
 #### **Activación:**
@@ -76,11 +81,11 @@ self.scheduler.schedule_builder.enable_relaxed_mode()
 #### **Logging:**
 ```
 🔓 RELAXED MODE activated for iterative optimization phase
-   - Progressive constraint relaxation enabled
-   - Relaxation levels: 0 (strict) → 3 (extreme)
-   - Target tolerance: +10% → +18% (progressive)
-   - Gap reduction: Allowed at level 3+ with high deficit
-   - Pattern 7/14: Relaxed progressively with deficit
+   - Target limit: +10% (NEVER increases above this)
+   - Gap reduction: -1 ONLY if deficit ≥3 shifts
+   - Pattern 7/14: Allowed if deficit >10% of target
+   - Balance tolerance: ±10% for guardias/mes, weekends
+   - NEVER relaxed: mandatory, incompatibilities, days off
 ```
 
 ---
@@ -245,16 +250,23 @@ grep "STRICT MODE\|RELAXED MODE" logs.txt
 
 ## ✅ Commit Info
 
-**Commit:** `872c22c`
+**Commit:** `ec91e8a` (latest)
 **Branch:** `main`
 **Pushed:** ✅ Yes
 
 **Files changed:**
-- `schedule_builder.py` (+100 lines)
-- `scheduler_core.py` (+20 lines)
-- `STRICT_INITIAL_DISTRIBUTION.md` (new)
-- `MULTIPLE_INITIAL_ATTEMPTS.md` (new)
-- `PROPUESTA_MEJORAS.md` (new)
+- `schedule_builder.py` (corrected relaxation parameters)
+- `scheduler_core.py` (updated logging)
+- `STRICT_INITIAL_DISTRIBUTION.md` (updated specs)
+- `MULTIPLE_INITIAL_ATTEMPTS.md` (created)
+- `PROPUESTA_MEJORAS.md` (created)
+- `IMPLEMENTATION_SUMMARY.md` (this file)
+
+**Key corrections in latest commit:**
+- Target tolerance fixed at +10% (removed progressive increase to +18%)
+- Gap reduction limited to -1 only (not progressive)
+- Pattern 7/14 relaxation based on >10% deficit
+- Balance tolerance set to ±10%
 
 ---
 

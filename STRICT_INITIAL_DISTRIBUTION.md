@@ -179,64 +179,78 @@ def _calculate_strict_score(
 ```python
 class RelaxedOptimizer:
     """
-    Optimizador con relajación progresiva para fase iterativa.
+    Optimizador con relajación CONTROLADA para fase iterativa.
+    LÍMITES MÁXIMOS: +10% target, gap-1, ±10% balance
     """
     
-    RELAXATION_LEVELS = {
-        'LEVEL_0': {
-            'name': 'STRICT',
-            'target_tolerance': 1.10,      # +10%
-            'gap_reduction': 0,             # Sin reducción
-            'pattern_7_14': 'strict',       # Estricto
-            'monthly_tolerance': 1,         # ±1
-            'weekend_tolerance': 1          # ±1
-        },
-        'LEVEL_1': {
-            'name': 'MODERATE',
-            'target_tolerance': 1.12,      # +12%
-            'gap_reduction': 0,             # Sin reducción aún
-            'pattern_7_14': 'moderate',     # Permite con déficit >3
-            'monthly_tolerance': 2,         # ±2
-            'weekend_tolerance': 1          # ±1 (mantener)
-        },
-        'LEVEL_2': {
-            'name': 'RELAXED',
-            'target_tolerance': 1.15,      # +15%
-            'gap_reduction': 0,             # Sin reducción
-            'pattern_7_14': 'relaxed',      # Permite con déficit >2
-            'monthly_tolerance': 2,         # ±2
-            'weekend_tolerance': 2          # ±2
-        },
-        'LEVEL_3': {
-            'name': 'EXTREME',
-            'target_tolerance': 1.18,      # +18%
-            'gap_reduction': 1,             # gap-1 SOLO en extremo
-            'pattern_7_14': 'very_relaxed', # Permite con déficit >1
-            'monthly_tolerance': 3,         # ±3
-            'weekend_tolerance': 2          # ±2 (mantener)
-        }
+    RELAXATION_RULES = {
+        'target_tolerance': 1.10,          # +10% SIEMPRE (NO aumenta nunca)
+        'gap_reduction': -1,               # Reducción -1 SOLAMENTE
+        'gap_deficit_threshold': 3,        # Requiere déficit ≥3 guardias
+        'pattern_7_14_threshold': 10,      # Permite si déficit >10% del target
+        'monthly_tolerance': 10,           # ±10% tolerancia
+        'weekend_tolerance': 10            # ±10% tolerancia
     }
     
-    def select_relaxation_level(self, iteration: int, violations: int) -> str:
+    def validate_relaxed_assignment(
+        self, 
+        worker_id: str,
+        date: datetime,
+        post: int,
+        schedule: Dict,
+        worker_data: Dict
+    ) -> Tuple[bool, str]:
         """
-        Selecciona nivel de relajación según progreso.
+        Valida asignación con relajación controlada.
         
-        Criterios:
-        - Iterations 1-10 con violations >20: LEVEL_1
-        - Iterations 11-20 con violations >15: LEVEL_2  
-        - Iterations 21+ con violations >10: LEVEL_3
-        - Violations <5: LEVEL_0 (mantener estricto)
+        LÍMITES:
+        - Target: +10% MÁXIMO (igual que modo estricto)
+        - Gap: Permite reducción -1 si déficit ≥3 guardias
+        - Patrón 7/14: Permite si déficit >10% del target
+        - Balance: Tolerancia ±10% en guardias/mes, weekends
+        
+        NUNCA RELAJA:
+        - Mandatory shifts
+        - Incompatibilidades
+        - Days off
         """
-        if violations < 5:
-            return 'LEVEL_0'
-        elif iteration <= 10 and violations > 20:
-            return 'LEVEL_1'
-        elif iteration <= 20 and violations > 15:
-            return 'LEVEL_2'
-        elif violations > 10:
-            return 'LEVEL_3'
+        # 1. Days off (NUNCA relaja)
+        if self._is_day_off(worker_id, date):
+            return False, "Worker has day off"
+        
+        # 2. Incompatibilidades (NUNCA relaja)
+        if self._has_incompatibility(worker_id, date, post, schedule):
+            return False, "Incompatibility conflict"
+        
+        # 3. Objetivo +10% MÁXIMO (igual que estricto)
+        if self._exceeds_target_limit(worker_id, worker_data):
+            return False, "Exceeds +10% target limit"
+        
+        # 4. Gap mínimo (permite -1 con déficit ≥3)
+        deficit = self._calculate_deficit(worker_id, worker_data)
+        if deficit >= 3:
+            if not self._respects_gap_minus_1(worker_id, date):
+                return False, "Violates gap-1"
         else:
-            return 'LEVEL_1'
+            if not self._respects_min_gap(worker_id, date):
+                return False, "Violates minimum gap"
+        
+        # 5. Patrón 7/14 (permite si déficit >10% del target)
+        deficit_percentage = self._calculate_deficit_percentage(worker_id, worker_data)
+        if deficit_percentage <= 10:
+            if self._violates_7_14_pattern(worker_id, date):
+                return False, "Violates 7/14 day pattern"
+        # Si déficit >10%, permite violación del patrón
+        
+        # 6. Equilibrio mensual (tolerancia ±10%)
+        if not self._within_monthly_tolerance_10pct(worker_id, date, worker_data):
+            return False, "Exceeds monthly balance ±10%"
+        
+        # 7. Equilibrio weekend (tolerancia ±10%)
+        if not self._within_weekend_tolerance_10pct(worker_id, date):
+            return False, "Exceeds weekend balance ±10%"
+        
+        return True, "Valid"
 ```
 
 ---
@@ -274,21 +288,22 @@ Para cada iteración (1-30):
 
 ## 📊 Comparación Fase Inicial vs Iteración
 
-| Restricción | Fase Inicial | Fase Iteración (Nivel 3) |
-|-------------|--------------|--------------------------|
-| Target limit | +10% ESTRICTO | +18% relajado |
-| Gap mínimo | NO reducción | gap-1 permitido |
-| Patrón 7/14 | PROHIBIDO | Permite con déficit >1 |
-| Balance mensual | ±1 ESTRICTO | ±3 relajado |
-| Balance weekend | ±1 ESTRICTO | ±2 relajado |
+| Restricción | Fase Inicial (ESTRICTO) | Fase Iteración (RELAJADO) |
+|-------------|-------------------------|---------------------------|
+| Target limit | +10% ESTRICTO | +10% (sin cambios) |
+| Gap mínimo | NO reducción | gap-1 si déficit ≥3 |
+| Patrón 7/14 | PROHIBIDO | Permite si déficit >10% |
+| Balance mensual | ±1 ESTRICTO | ±10% tolerancia |
+| Balance weekend | ±1 ESTRICTO | ±10% tolerancia |
 | Incompatibilidades | NUNCA | NUNCA (siempre estricto) |
 | Days off | NUNCA | NUNCA (siempre estricto) |
 | Mandatory | NUNCA cambiar | NUNCA cambiar |
 
 **Restricciones SIEMPRE estrictas (nunca se relajan):**
 - ✅ Mandatory shifts
-- ✅ Incompatibilidades
+- ✅ Incompatibilidades  
 - ✅ Days off
+- ✅ Target +10% máximo (NO aumenta en relajación)
 
 ---
 

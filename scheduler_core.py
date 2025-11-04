@@ -757,11 +757,11 @@ class SchedulerCore:
             # CRITICAL: Switch to RELAXED MODE for iterative optimization
             self.scheduler.schedule_builder.enable_relaxed_mode()
             logging.info("🔓 RELAXED MODE activated for iterative optimization phase")
-            logging.info("   - Progressive constraint relaxation enabled")
-            logging.info("   - Relaxation levels: 0 (strict) → 3 (extreme)")
-            logging.info("   - Target tolerance: +10% → +18% (progressive)")
-            logging.info("   - Gap reduction: Allowed at level 3+ with high deficit")
-            logging.info("   - Pattern 7/14: Relaxed progressively with deficit")
+            logging.info("   - Target tolerance: +10% (NEVER increases)")
+            logging.info("   - Gap reduction: -1 ONLY (with deficit ≥3)")
+            logging.info("   - Pattern 7/14: Allows violation if deficit >10% of target")
+            logging.info("   - Balance tolerance: ±10% for guardias/mes, weekends")
+            logging.info("   - Mandatory/Incompatibilities/Days off: ALWAYS respected")
             
             # Apply iterative optimization
             logging.info(f"Starting iterative optimization (max {self.iterative_optimizer.max_iterations} iterations)...")
