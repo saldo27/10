@@ -942,8 +942,9 @@ class ScheduleBuilder:
         from datetime import date as date_class
         from calendar import monthrange
         
-        start = self.start_date
-        end = self.end_date
+        # Convertir start_date y end_date a date si son datetime
+        start = self.start_date.date() if hasattr(self.start_date, 'date') else self.start_date
+        end = self.end_date.date() if hasattr(self.end_date, 'date') else self.end_date
         
         # Contar meses y calcular fracción de cada mes
         months_in_period = []
