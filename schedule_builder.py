@@ -507,6 +507,15 @@ class ScheduleBuilder:
 
     def _can_assign_worker(self, worker_id, date, post):
         try:
+            # CRITICAL: Never assign to a slot occupied by a mandatory assignment
+            if (date in self.schedule and 
+                len(self.schedule[date]) > post and 
+                self.schedule[date][post] is not None):
+                existing_worker = self.schedule[date][post]
+                if (existing_worker, date) in self._locked_mandatory:
+                    logging.debug(f"Cannot assign {worker_id}: slot {date.strftime('%Y-%m-%d')} post {post} locked by mandatory for {existing_worker}")
+                    return False
+            
             # Skip if already assigned to this date
             if worker_id in self.schedule.get(date, []):
                 return False
@@ -1543,6 +1552,15 @@ class ScheduleBuilder:
         """
         candidates = []
         logging.debug(f"Looking for candidates for {date.strftime('%d-%m-%Y')}, post {post}")
+
+        # CRITICAL: Check if this slot is already occupied by a mandatory assignment
+        if (date in self.schedule and 
+            len(self.schedule[date]) > post and 
+            self.schedule[date][post] is not None):
+            existing_worker = self.schedule[date][post]
+            if (existing_worker, date) in self._locked_mandatory:
+                logging.debug(f"Slot {date.strftime('%d-%m-%Y')} post {post} locked by mandatory for worker {existing_worker}")
+                return []  # Return empty list - this slot is locked
 
         # Get workers already assigned to other posts on this date
         already_assigned_on_date = [w for idx, w in enumerate(self.schedule.get(date, [])) if w is not None and idx != post]
