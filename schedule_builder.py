@@ -1352,9 +1352,33 @@ class ScheduleBuilder:
         """
         Calculate additional scoring factors like weekend balance and weekly distribution.
         Now includes ±10% tolerance validation for weekend shifts.
+        Prioritizes maximum spacing between shifts (gap maximization).
         """
         worker_id = worker['id']
         score = 0
+        
+        # Gap Distance Score - Favor MAXIMUM spacing between shifts
+        # The system should prioritize larger gaps, not smaller ones
+        assignments = self.worker_assignments[worker_id]
+        if assignments:
+            # Find the most recent assignment
+            most_recent = max(assignments)
+            days_since_last = (date - most_recent).days
+            
+            # Bonus increases with distance (exponential growth to favor larger gaps)
+            # Base multiplier: 150 points per day
+            # Exponential bonus for gaps > minimum requirement
+            min_gap = self.gap_between_shifts + 1
+            
+            if days_since_last > min_gap:
+                # Extra days beyond minimum get exponentially higher scores
+                extra_days = days_since_last - min_gap
+                gap_bonus = 150 * days_since_last  # Base linear component
+                gap_bonus += (extra_days ** 1.5) * 100  # Exponential component for large gaps
+                score += gap_bonus
+            else:
+                # Even minimum gaps get some bonus (though they should already pass constraint)
+                score += days_since_last * 100
         
         # Weekend Balance Score with ±10% tolerance enforcement
         if self._is_weekend_or_holiday(date):
