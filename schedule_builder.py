@@ -183,6 +183,14 @@ class ScheduleBuilder:
             for date in list(assignments):  # Make a copy to safely modify during iteration
                 # Check if this worker is actually in the schedule for this date
                 if date not in self.schedule or worker_id not in self.schedule[date]:
+                    # CRITICAL: NEVER remove mandatory assignments even if inconsistent
+                    if self._is_mandatory(worker_id, date):
+                        logging.error(f"CRITICAL: Mandatory assignment inconsistency detected for {worker_id} on {date} - NOT REMOVING")
+                        continue
+                    if (worker_id, date) in self._locked_mandatory:
+                        logging.error(f"CRITICAL: Locked mandatory assignment inconsistency detected for {worker_id} on {date} - NOT REMOVING")
+                        continue
+                    
                     # Remove this inconsistent assignment
                     self.worker_assignments[worker_id].remove(date)
                     inconsistencies_fixed += 1
@@ -3251,6 +3259,12 @@ class ScheduleBuilder:
                 # Buscar posición del over_worker en este día
                 for post_idx, assigned_worker in enumerate(self.schedule[over_date]):
                     if assigned_worker == over_worker:
+                        # CRITICAL: Double-check mandatory before swap
+                        if self._is_mandatory(over_worker, over_date):
+                            continue
+                        if (over_worker, over_date) in self._locked_mandatory:
+                            continue
+                        
                         # Verificar si under_worker puede tomar esta posición
                         if self._can_assign_worker(under_worker, over_date, post_idx):
                             # Realizar el intercambio
