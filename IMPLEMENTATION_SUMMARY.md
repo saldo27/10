@@ -15,7 +15,7 @@ El sistema ahora realiza el reparto inicial con **restricciones absolutamente es
 | **Days off** | NUNCA asignados | `days_off` validation |
 | **Target +10%** | BLOQUEO absoluto | `use_strict_mode=True` |
 | **Gap mínimo** | SIN reducción | `min_gap = base_gap` |
-| **Patrón 7/14** | PROHIBIDO | `return False` sin excepciones |
+| **Patrón 7/14** | Permite si déficit ≥3 | Evita bloqueo total |
 | **Balance mensual** | ±1 máximo | Validation estricta |
 | **Balance weekend** | ±1 máximo | Validation estricta |
 | **Last posts** | Distribuido equitativamente | Balance tracking |

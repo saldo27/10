@@ -1118,10 +1118,18 @@ class ScheduleBuilder:
                 if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
                     continue  # Skip this constraint for weekend days
                 
-                # STRICT MODE: NEVER allow 7/14 pattern violation
+                # STRICT MODE: Allow violations if worker has significant deficit
+                # During initial distribution, 7/14 pattern should NOT be absolute
+                # because it blocks too many assignments (e.g., Worker on Thu 1 can't work Thu 8, 15, 22)
                 if self.use_strict_mode:
-                    logging.debug(f"STRICT: Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')}")
-                    return False
+                    # In strict mode, allow 7/14 violation if worker needs at least 3 more shifts
+                    # This allows initial distribution to proceed without being completely blocked
+                    if target_deficit >= 3:
+                        logging.debug(f"STRICT: Worker {worker_id} allowed 7/14 pattern override - needs {target_deficit} more shifts")
+                        continue
+                    else:
+                        logging.debug(f"STRICT: Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')}")
+                        return False
                 
                 # RELAXED MODE: Allow violation if worker has significant deficit
                 # Work with ±10% tolerance concept: allow if it helps balance

@@ -186,7 +186,7 @@ class SchedulerCore:
             logging.info("🔒 STRICT MODE activated for initial distribution phase")
             logging.info("   - Target limit: +10% (adjusted by work_percentage)")
             logging.info("   - Gap reduction: NOT allowed")
-            logging.info("   - Pattern 7/14: ABSOLUTELY PROHIBITED")
+            logging.info("   - Pattern 7/14: Allowed if worker needs 3+ more shifts (prevents blocking)")
             logging.info("   - Mandatory shifts: NEVER modified")
             logging.info("   - Incompatibilities: ALWAYS respected")
             logging.info("   - Days off: NEVER violated")

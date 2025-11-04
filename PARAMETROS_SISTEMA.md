@@ -9,7 +9,7 @@
 ✅ Days off               → NUNCA asignados
 ✅ Target máximo          → +10% del objetivo (ajustado por % jornada)
 ✅ Gap mínimo             → Sin reducción
-✅ Patrón 7/14            → PROHIBIDO absolutamente
+✅ Patrón 7/14            → Permite si trabajador necesita 3+ turnos más
 ✅ Balance mensual        → ±1 turno máximo
 ✅ Balance weekend        → ±1 fin de semana máximo
 ```
@@ -64,7 +64,11 @@ if deficit >= 3:
 else:
     min_gap = gap_between_shifts  # Normal
 
-# Patrón 7/14: Permite con déficit crítico
+# Patrón 7/14 (modo estricto): Permite con déficit absoluto
+if deficit >= 3:  # Necesita 3+ turnos más
+    allow_7_14_violation = True
+
+# Patrón 7/14 (modo relajado): Permite con déficit porcentual
 deficit_percentage = (deficit / target_shifts) × 100
 if deficit_percentage > 10:  # >10% del target
     allow_7_14_violation = True
@@ -86,7 +90,7 @@ tolerance = expected_weekends × 0.10
 |-----------|----------|----------|-------|
 | Target | +10% | +10% | **NO aumenta** |
 | Gap | Normal | gap-1 | Solo si déficit ≥3 |
-| 7/14 | ❌ | ✅ | Solo si déficit >10% |
+| 7/14 | ✅ | ✅ | Estricto: déficit ≥3, Relajado: déficit >10% |
 | Mensual | ±1 | ±10% | Porcentaje |
 | Weekend | ±1 | ±10% | Porcentaje |
 | Mandatory | ❌ | ❌ | **NUNCA relaja** |

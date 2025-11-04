@@ -29,9 +29,9 @@
 - Solo en iteración con extrema necesidad
 
 ### 5. **Patrón 7/14 Días**
-- **PROHIBIDO** asignar mismo día de semana con distancia 7 o 14 días
+- **PREFERIBLEMENTE EVITADO** asignar mismo día de semana con distancia 7 o 14 días
 - Aplica a lunes-jueves (weekend tiene reglas especiales)
-- **SIN EXCEPCIONES** en fase inicial
+- **PERMITE EXCEPCIONES** si trabajador necesita 3+ turnos más (evita bloqueo total)
 
 ### 6. **Equilibrio Mensual**
 - Tolerancia: **±1 turno** por mes como máximo extremo
@@ -292,7 +292,7 @@ Para cada iteración (1-30):
 |-------------|-------------------------|---------------------------|
 | Target limit | +10% ESTRICTO | +10% (sin cambios) |
 | Gap mínimo | NO reducción | gap-1 si déficit ≥3 |
-| Patrón 7/14 | PROHIBIDO | Permite si déficit >10% |
+| Patrón 7/14 | Permite si déficit ≥3 | Permite si déficit >10% |
 | Balance mensual | ±1 ESTRICTO | ±10% tolerancia |
 | Balance weekend | ±1 ESTRICTO | ±10% tolerancia |
 | Incompatibilidades | NUNCA | NUNCA (siempre estricto) |
