@@ -177,10 +177,20 @@ class SchedulerCore:
             bool: True if at least one attempt was successful
         """
         logging.info("=" * 80)
-        logging.info("Phase 2.5: Multiple Initial Distribution Attempts")
+        logging.info("Phase 2.5: Multiple Initial Distribution Attempts (STRICT MODE)")
         logging.info("=" * 80)
         
         try:
+            # CRITICAL: Enable STRICT MODE for initial distribution
+            self.scheduler.schedule_builder.enable_strict_mode()
+            logging.info("🔒 STRICT MODE activated for initial distribution phase")
+            logging.info("   - Target limit: +10% (adjusted by work_percentage)")
+            logging.info("   - Gap reduction: NOT allowed")
+            logging.info("   - Pattern 7/14: ABSOLUTELY PROHIBITED")
+            logging.info("   - Mandatory shifts: NEVER modified")
+            logging.info("   - Incompatibilities: ALWAYS respected")
+            logging.info("   - Days off: NEVER violated")
+            
             # Get adaptive configuration to determine number of attempts
             adaptive_config = self.adaptive_manager.calculate_adaptive_iterations()
             
@@ -743,6 +753,15 @@ class SchedulerCore:
                     logging.info(f"  - {violation['worker_id']}: {violation['assigned_shifts']} assigned "
                                f"(target: {violation['target_shifts']}, "
                                f"deviation: {violation['deviation_percentage']:+.1f}%)")
+            
+            # CRITICAL: Switch to RELAXED MODE for iterative optimization
+            self.scheduler.schedule_builder.enable_relaxed_mode()
+            logging.info("🔓 RELAXED MODE activated for iterative optimization phase")
+            logging.info("   - Progressive constraint relaxation enabled")
+            logging.info("   - Relaxation levels: 0 (strict) → 3 (extreme)")
+            logging.info("   - Target tolerance: +10% → +18% (progressive)")
+            logging.info("   - Gap reduction: Allowed at level 3+ with high deficit")
+            logging.info("   - Pattern 7/14: Relaxed progressively with deficit")
             
             # Apply iterative optimization
             logging.info(f"Starting iterative optimization (max {self.iterative_optimizer.max_iterations} iterations)...")

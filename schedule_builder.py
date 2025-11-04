@@ -62,11 +62,15 @@ class ScheduleBuilder:
         self.adaptive_config = self.iteration_manager.calculate_adaptive_iterations()
         logging.info(f"Adaptive config: {self.adaptive_config}")
         
+        # STRICT MODE for initial distribution
+        self.use_strict_mode = True  # Default: strict for initial fill
+        self.relaxation_level_override = None  # None = use method parameter, or set to force level
+        
         # Build performance caches
         self._build_optimization_caches()
 
         logging.debug(f"[ScheduleBuilder.__init__] self.schedule object ID: {id(self.schedule)}, Initial keys: {list(self.schedule.keys())[:5]}")
-        logging.info("Enhanced ScheduleBuilder initialized with caching")
+        logging.info("Enhanced ScheduleBuilder initialized with caching (STRICT MODE enabled)")
     
     def _build_optimization_caches(self) -> None:
         """Build caches for performance optimization"""
@@ -106,6 +110,41 @@ class ScheduleBuilder:
             current_date += timedelta(days=1)
         
         logging.debug(f"Built optimization caches for {len(self._worker_cache)} workers and {len(self._date_cache)} dates")
+    
+    # ========================================
+    # STRICT MODE CONTROL
+    # ========================================
+    
+    def enable_strict_mode(self):
+        """
+        Activa modo ESTRICTO para reparto inicial.
+        
+        Restricciones ESTRICTAS:
+        - Target: +10% máximo (ajustado por work_percentage)
+        - Gap: Sin reducción
+        - Patrón 7/14: PROHIBIDO absolutamente
+        - Balance mensual: ±1 estricto
+        - Balance weekend: ±1 estricto
+        """
+        self.use_strict_mode = True
+        logging.info("✅ STRICT MODE ENABLED - All constraints enforced strictly")
+    
+    def enable_relaxed_mode(self):
+        """
+        Activa modo RELAJADO para optimización iterativa.
+        
+        Permite relajación progresiva según relaxation_level:
+        - Level 0: +10% target, sin gap reduction, patrón 7/14 estricto
+        - Level 1: +12% target, sin gap reduction, patrón 7/14 con déficit >5
+        - Level 2: +15% target, sin gap reduction, patrón 7/14 con déficit >3
+        - Level 3: +18% target, gap-1 permitido, patrón 7/14 con déficit >1
+        """
+        self.use_strict_mode = False
+        logging.info("🔓 RELAXED MODE ENABLED - Progressive constraint relaxation allowed")
+    
+    def is_strict_mode(self) -> bool:
+        """Retorna True si está en modo estricto."""
+        return self.use_strict_mode
         
     def _ensure_data_integrity(self) -> bool:
         """
@@ -917,11 +956,22 @@ class ScheduleBuilder:
     
     def _calculate_overall_target_score(self, worker_id, worker_config, relaxation_level):
         """
-        Calculate score based on overall target shifts with ±10% tolerance enforcement.
+        Calculate score based on overall target shifts with tolerance enforcement.
+        
+        STRICT MODE (use_strict_mode=True):
+        - Tolerance: +10% ESTRICTA (ajustada por work_percentage)
+        - Bloqueo absoluto si excede +10%
+        
+        RELAXED MODE (use_strict_mode=False):
+        - Tolerance: Progresiva según relaxation_level
+          - Level 0: +10%
+          - Level 1: +12%
+          - Level 2: +15%
+          - Level 3: +18%
         
         CRITICAL LOGIC:
         - Workers BELOW target get HUGE bonus (encouragement)
-        - Workers ABOVE +10% get blocked (prevention)
+        - Workers ABOVE tolerance get blocked (prevention)
         - Part-time workers (<100%) get STRONGER penalties for excess
         - Never penalize workers with deficit
         """
@@ -932,24 +982,40 @@ class ScheduleBuilder:
         if overall_target_shifts <= 0:
             return 0
         
-        # Calculate ±10% tolerance bounds
-        tolerance = 0.10
-        tolerance_amount = overall_target_shifts * tolerance
-        min_allowed = max(0, int(overall_target_shifts - tolerance_amount))
-        max_allowed = int(overall_target_shifts + tolerance_amount + 0.5)  # Round up
+        # Adjust target by work percentage
+        adjusted_target = int(overall_target_shifts * work_percentage / 100)
+        
+        # Calculate tolerance based on mode and relaxation level
+        if self.use_strict_mode:
+            # STRICT: Always +10%
+            tolerance = 0.10
+        else:
+            # RELAXED: Progressive tolerance
+            if relaxation_level >= 3:
+                tolerance = 0.18  # Level 3: +18%
+            elif relaxation_level >= 2:
+                tolerance = 0.15  # Level 2: +15%
+            elif relaxation_level >= 1:
+                tolerance = 0.12  # Level 1: +12%
+            else:
+                tolerance = 0.10  # Level 0: +10%
+        
+        tolerance_amount = adjusted_target * tolerance
+        min_allowed = max(0, int(adjusted_target - tolerance_amount))
+        max_allowed = int(adjusted_target + tolerance_amount + 0.5)  # Round up
         
         # Count after potential assignment
         shifts_after_assignment = current_total_shifts + 1
         
-        # STRICT: Block assignments that would violate +10% upper tolerance
+        # Block assignments that would violate upper tolerance
         if shifts_after_assignment > max_allowed:
-            if relaxation_level < 2:
-                # Hard block at relaxation levels 0 and 1
-                logging.debug(f"Worker {worker_id}: BLOCKED - would exceed +10% tolerance "
-                            f"({shifts_after_assignment} > {max_allowed}, target: {overall_target_shifts})")
+            if self.use_strict_mode or relaxation_level < 2:
+                # Hard block in strict mode or at low relaxation levels
+                logging.debug(f"Worker {worker_id}: BLOCKED - would exceed +{tolerance*100:.0f}% tolerance "
+                            f"({shifts_after_assignment} > {max_allowed}, target: {adjusted_target})")
                 return float('-inf')
             else:
-                # At highest relaxation, allow with severe penalty
+                # At high relaxation, allow with severe penalty
                 excess = shifts_after_assignment - max_allowed
                 # EXTRA penalty for part-time workers
                 base_penalty = 5000
@@ -961,23 +1027,23 @@ class ScheduleBuilder:
                                 f"exceeding tolerance (penalty: {penalty:.0f}, multiplier: {multiplier:.1f}x)")
                 else:
                     penalty = excess * base_penalty
-                    logging.debug(f"Worker {worker_id}: Heavy penalty for exceeding tolerance at relaxation=2 "
+                    logging.debug(f"Worker {worker_id}: Heavy penalty for exceeding tolerance at relaxation={relaxation_level} "
                                 f"(penalty: {penalty})")
                 return -penalty
         
         # CRITICAL: Encourage workers BELOW target - HUGE bonus for large deficits
-        if shifts_after_assignment < overall_target_shifts:
-            deficit = overall_target_shifts - shifts_after_assignment
+        if shifts_after_assignment < adjusted_target:
+            deficit = adjusted_target - shifts_after_assignment
             # MASSIVE bonus for workers far from target (e.g., 33/55 = 22 deficit)
             bonus = deficit * 3000  # Increased from 1000 to 3000
-            logging.debug(f"Worker {worker_id}: HUGE BONUS for deficit ({shifts_after_assignment} < {overall_target_shifts}, bonus: {bonus})")
+            logging.debug(f"Worker {worker_id}: HUGE BONUS for deficit ({shifts_after_assignment} < {adjusted_target}, bonus: {bonus})")
             return bonus
-        elif shifts_after_assignment == overall_target_shifts:
+        elif shifts_after_assignment == adjusted_target:
             # Good - exactly at target
             return 500
         else:
-            # Above target but within +10% tolerance
-            excess = shifts_after_assignment - overall_target_shifts
+            # Above target but within tolerance
+            excess = shifts_after_assignment - adjusted_target
             # Enhanced penalty scale for part-time workers
             if work_percentage < 100:
                 # Progressive penalty: stronger for part-time workers
@@ -991,7 +1057,17 @@ class ScheduleBuilder:
             return -penalty
     
     def _check_gap_constraints(self, worker, date, relaxation_level):
-        """Check gap constraints between assignments"""
+        """
+        Check gap constraints between assignments.
+        
+        STRICT MODE (use_strict_mode=True):
+        - Gap mínimo: NO reducción, siempre respeta gap_between_shifts
+        - Patrón 7/14: PROHIBIDO absolutamente (sin excepciones)
+        
+        RELAXED MODE (use_strict_mode=False):
+        - Gap mínimo: Permite gap-1 en relaxation_level >= 3
+        - Patrón 7/14: Permite excepciones con déficit según relaxation_level
+        """
         worker_id = worker['id']
         assignments = sorted(list(self.worker_assignments[worker_id]))
         
@@ -1005,7 +1081,18 @@ class ScheduleBuilder:
         high_deficit = target_deficit >= 2  # Worker needs 2+ more shifts
         
         work_percentage = worker.get('work_percentage', 100)
-        min_gap = self.gap_between_shifts + 2 if work_percentage < 70 else self.gap_between_shifts + 1
+        base_min_gap = self.gap_between_shifts + 2 if work_percentage < 70 else self.gap_between_shifts + 1
+        
+        # STRICT MODE: No gap reduction allowed
+        if self.use_strict_mode:
+            min_gap = base_min_gap
+        else:
+            # RELAXED MODE: Allow gap-1 only at extreme relaxation (level 3+)
+            if relaxation_level >= 3 and target_deficit >= 5:
+                min_gap = max(1, base_min_gap - 1)  # Reduce gap by 1, minimum 1
+                logging.debug(f"RELAXED: Worker {worker_id} gap reduced to {min_gap} (deficit: {target_deficit})")
+            else:
+                min_gap = base_min_gap
         
         for prev_date in assignments:
             days_between = abs((date - prev_date).days)
@@ -1029,9 +1116,20 @@ class ScheduleBuilder:
                 if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
                     continue  # Skip this constraint for weekend days
                 
-                # STRICT: Only allow violation at HIGHEST relaxation level (2) and with EXTREME deficit
-                if relaxation_level >= 2 and high_deficit and target_deficit >= 5:
-                    logging.warning(f"⚠️ EXCEPTION: Worker {worker_id} 7/14 pattern override - EXTREME deficit ({target_deficit}) at max relaxation")
+                # STRICT MODE: NEVER allow 7/14 pattern violation
+                if self.use_strict_mode:
+                    logging.debug(f"STRICT: Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')}")
+                    return False
+                
+                # RELAXED MODE: Progressive relaxation based on level and deficit
+                if relaxation_level >= 3 and target_deficit >= 1:
+                    logging.warning(f"⚠️ RELAXED L3: Worker {worker_id} 7/14 pattern override - deficit ({target_deficit})")
+                    continue
+                elif relaxation_level >= 2 and target_deficit >= 3:
+                    logging.warning(f"⚠️ RELAXED L2: Worker {worker_id} 7/14 pattern override - moderate deficit ({target_deficit})")
+                    continue
+                elif relaxation_level >= 1 and target_deficit >= 5:
+                    logging.warning(f"⚠️ RELAXED L1: Worker {worker_id} 7/14 pattern override - high deficit ({target_deficit})")
                     continue
                     
                 logging.debug(f"Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}")
