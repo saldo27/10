@@ -914,15 +914,95 @@ class ScheduleBuilder:
             
         return None, mandatory_dates
     
+    def _get_expected_monthly_target(self, worker_config, year, month):
+        """
+        Calcula el objetivo mensual esperado dinámicamente.
+        
+        Fórmula: objetivo_global / número_de_meses (ajustado si mes incompleto)
+        """
+        if not worker_config:
+            return 0
+        
+        # Verificar si hay objetivo mensual específico configurado
+        month_key = f"{year}-{month:02d}"
+        monthly_targets_config = worker_config.get('monthly_targets', {})
+        if monthly_targets_config.get(month_key, 0) > 0:
+            return monthly_targets_config[month_key]
+        
+        # Calcular dinámicamente desde objetivo global
+        overall_target = worker_config.get('target_shifts', 0)
+        if overall_target == 0:
+            return 0
+        
+        # Ajustar por work_percentage (para trabajadores a tiempo parcial)
+        work_percentage = worker_config.get('work_percentage', 100) / 100
+        adjusted_overall_target = overall_target * work_percentage
+        
+        # Calcular número de meses en el periodo
+        from datetime import date as date_class
+        from calendar import monthrange
+        
+        start = self.start_date
+        end = self.end_date
+        
+        # Contar meses y calcular fracción de cada mes
+        months_in_period = []
+        current = date_class(start.year, start.month, 1)
+        
+        while current <= end:
+            year_m = current.year
+            month_m = current.month
+            
+            # Días totales en este mes
+            days_in_month = monthrange(year_m, month_m)[1]
+            
+            # Primer y último día del mes
+            first_day = date_class(year_m, month_m, 1)
+            last_day = date_class(year_m, month_m, days_in_month)
+            
+            # Intersección con el periodo
+            month_start = max(start, first_day)
+            month_end = min(end, last_day)
+            
+            if month_start <= month_end:
+                days_in_period = (month_end - month_start).days + 1
+                fraction = days_in_period / days_in_month
+                months_in_period.append((year_m, month_m, fraction))
+            
+            # Siguiente mes
+            if month_m == 12:
+                current = date_class(year_m + 1, 1, 1)
+            else:
+                current = date_class(year_m, month_m + 1, 1)
+        
+        # Total de "meses equivalentes" (considerando meses parciales)
+        total_month_weight = sum(frac for _, _, frac in months_in_period)
+        
+        if total_month_weight == 0:
+            return 0
+        
+        # Buscar la fracción del mes consultado
+        month_fraction = 1.0
+        for y, m, frac in months_in_period:
+            if y == year and m == month:
+                month_fraction = frac
+                break
+        
+        # Objetivo mensual = (objetivo_global / total_meses) * fracción_del_mes
+        expected_monthly = (adjusted_overall_target / total_month_weight) * month_fraction
+        
+        # Redondear al entero más cercano
+        return round(expected_monthly)
+
     def _calculate_monthly_target_score(self, worker, date, relaxation_level):
         """Calculate score based on monthly targets"""
         worker_id = worker['id']
-        month_key = f"{date.year}-{date.month:02d}"
         
-        # Get worker config and monthly targets
+        # Get worker config
         worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
-        monthly_targets_config = worker_config.get('monthly_targets', {}) if worker_config else {}
-        target_this_month = monthly_targets_config.get(month_key, 0)
+        
+        # Calcular objetivo mensual esperado dinámicamente
+        expected_monthly_target = self._get_expected_monthly_target(worker_config, date.year, date.month)
         
         # Calculate current shifts assigned in this month
         shifts_this_month = sum(
@@ -930,20 +1010,13 @@ class ScheduleBuilder:
             if assigned_date.year == date.year and assigned_date.month == date.month
         )
         
-        # Define flexible monthly max
-        buffer_monthly_max = getattr(self, 'BUFFER_FOR_MONTHLY_MAX', 1)
+        # Máximo mensual = objetivo_mensual + tolerancia (±1) + relaxation
+        tolerance = 1
+        effective_max_monthly = expected_monthly_target + tolerance + relaxation_level
         
-        if target_this_month > 0:
-            effective_max_monthly = target_this_month + buffer_monthly_max + relaxation_level
-        else:
-            overall_target_shifts = worker_config.get('target_shifts', 0) if worker_config else 0
-            if overall_target_shifts > 0:
-                effective_max_monthly = buffer_monthly_max + relaxation_level
-            else:
-                effective_max_monthly = relaxation_level
-            
-            if overall_target_shifts > 0 and effective_max_monthly == 0 and relaxation_level == 0:
-                effective_max_monthly = 1
+        # Si no hay objetivo, permitir al menos algunos turnos
+        if expected_monthly_target == 0:
+            effective_max_monthly = 3 + relaxation_level
         
         # Check if adding this shift would exceed monthly limit
         if shifts_this_month + 1 > effective_max_monthly:
@@ -952,10 +1025,14 @@ class ScheduleBuilder:
         
         # Calculate score based on monthly target
         score = 0
-        if shifts_this_month < target_this_month:
-            score += (target_this_month - shifts_this_month) * 2000
-        elif shifts_this_month == target_this_month and target_this_month > 0:
-            score += 500
+        if expected_monthly_target > 0:
+            if shifts_this_month < expected_monthly_target:
+                # Necesita más turnos para alcanzar objetivo
+                score += (expected_monthly_target - shifts_this_month) * 2000
+            elif shifts_this_month == expected_monthly_target:
+                # Justo en el objetivo
+                score += 500
+            # Si está por encima del objetivo, score = 0 (neutral)
             
         return score
     
