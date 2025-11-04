@@ -1109,19 +1109,35 @@ class ScheduleBuilder:
         # Give MASSIVE bonus to workers with significant deficit
         if deficit >= 3:
             # Workers 3+ shifts below target get HUGE priority
-            bonus = 10000 + (deficit * 2000)  # 3 below = 16000, 5 below = 20000, etc.
+            bonus = 15000 + (deficit * 3000)  # 3 below = 24000, 4 below = 27000, etc.
             logging.debug(f"Worker {worker_id}: CRITICAL DEFICIT bonus +{bonus} "
                         f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit})")
             return bonus
         elif deficit >= 2:
-            # Workers 2 shifts below target get high priority
-            bonus = 8000
+            # Workers 2 shifts below target get very high priority
+            bonus = 12000  # Aumentado de 8000
             logging.debug(f"Worker {worker_id}: HIGH DEFICIT bonus +{bonus} "
                         f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit})")
             return bonus
         elif deficit >= 1:
-            # Workers 1 shift below target get good priority
-            return 5000
+            # Workers 1 shift below target get high priority
+            return 8000  # Aumentado de 5000
+        
+        # CRITICAL: Even more strict blocking for workers AT or ABOVE target
+        # If worker is at target or above, check if there are workers with deficit
+        if current_total_shifts >= adjusted_target:
+            # Check if this worker would exceed target + 1
+            if shifts_after_assignment > adjusted_target + 1:
+                # HARD BLOCK - no assignments beyond target+1 in strict mode
+                logging.debug(f"Worker {worker_id}: HARD BLOCKED - already at/above target "
+                            f"({current_total_shifts} >= {adjusted_target}), would be at {shifts_after_assignment}")
+                return float('-inf')
+            else:
+                # At exactly target+1, apply heavy penalty to discourage
+                penalty = 15000  # Muy alta para desalentar
+                logging.debug(f"Worker {worker_id}: HEAVY penalty for being at target+1 "
+                            f"(current: {current_total_shifts}, target: {adjusted_target})")
+                return -penalty
         
         # Block assignments that would violate upper tolerance
         if shifts_after_assignment > max_allowed:
@@ -3660,22 +3676,33 @@ class ScheduleBuilder:
             target = worker['target_shifts']
             current = len(self.worker_assignments.get(worker_id, []))
             deviation = current - target
-            if abs(deviation) > 0.5:  # Only process workers with meaningful deviation
+            # CRÍTICO: Procesar incluso desviaciones pequeñas (0.3 en vez de 0.5)
+            if abs(deviation) > 0.3:
                 worker_deviations.append((worker_id, deviation, target, current))
+                logging.debug(f"Worker {worker_id}: current={current}, target={target}, deviation={deviation:+.1f}")
     
         # Sort by absolute deviation (largest first)
         worker_deviations.sort(key=lambda x: abs(x[1]), reverse=True)
+        
+        logging.info(f"Found {len(worker_deviations)} workers with deviations to balance")
     
         for worker_id, deviation, target, current in worker_deviations:
             if deviation > 0:  # Worker has too many shifts
-                changes_made += self._try_redistribute_excess_shifts(worker_id, int(deviation))
+                # Intentar redistribuir TODOS los turnos de exceso, no solo algunos
+                excess_to_redistribute = max(1, int(deviation))
+                logging.info(f"Attempting to redistribute {excess_to_redistribute} excess shifts from {worker_id}")
+                changes_made += self._try_redistribute_excess_shifts(worker_id, excess_to_redistribute)
     
+        logging.info(f"Aggressive target balancing: {changes_made} changes made")
         return changes_made
 
     def _try_redistribute_excess_shifts(self, overloaded_worker_id, excess_count):
         """Try to move excess shifts from overloaded worker to underloaded workers"""
         changes = 0
-        max_attempts = min(excess_count, 5)  # Limit attempts to avoid disruption
+        # CRÍTICO: Aumentar intentos para ser más agresivo (de 5 a 10)
+        max_attempts = min(excess_count, 10)
+        
+        logging.debug(f"Redistributing up to {max_attempts} shifts from {overloaded_worker_id} (excess: {excess_count})")
     
         # Find underloaded workers
         underloaded_workers = []
@@ -3688,12 +3715,16 @@ class ScheduleBuilder:
             if current < target:
                 deficit = target - current
                 underloaded_workers.append((worker_id, deficit))
+                logging.debug(f"  Underloaded: {worker_id} (deficit: {deficit})")
     
-        # Sort by largest deficit first
+        # Sort by largest deficit first (priorizar los más necesitados)
         underloaded_workers.sort(key=lambda x: x[1], reverse=True)
     
         if not underloaded_workers:
+            logging.debug(f"No underloaded workers found for redistribution")
             return 0
+        
+        logging.info(f"Found {len(underloaded_workers)} underloaded workers for redistribution")
     
         # Try to move shifts
         assignments = list(self.worker_assignments.get(overloaded_worker_id, []))
