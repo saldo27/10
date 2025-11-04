@@ -1103,6 +1103,26 @@ class ScheduleBuilder:
         # Count after potential assignment
         shifts_after_assignment = current_total_shifts + 1
         
+        # CRITICAL: Calculate deficit - how far below target
+        deficit = adjusted_target - current_total_shifts
+        
+        # Give MASSIVE bonus to workers with significant deficit
+        if deficit >= 3:
+            # Workers 3+ shifts below target get HUGE priority
+            bonus = 10000 + (deficit * 2000)  # 3 below = 16000, 5 below = 20000, etc.
+            logging.debug(f"Worker {worker_id}: CRITICAL DEFICIT bonus +{bonus} "
+                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit})")
+            return bonus
+        elif deficit >= 2:
+            # Workers 2 shifts below target get high priority
+            bonus = 8000
+            logging.debug(f"Worker {worker_id}: HIGH DEFICIT bonus +{bonus} "
+                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit})")
+            return bonus
+        elif deficit >= 1:
+            # Workers 1 shift below target get good priority
+            return 5000
+        
         # Block assignments that would violate upper tolerance
         if shifts_after_assignment > max_allowed:
             if self.use_strict_mode or relaxation_level < 2:

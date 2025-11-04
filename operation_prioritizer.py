@@ -152,6 +152,15 @@ class OperationPrioritizer:
                 workload_priority - 1
             ))
         
+        # CRITICAL: Balance agresivo de targets si hay desbalance significativo
+        if workload_imbalance > 0.10:  # >10% desbalance
+            operations.append((
+                "balance_target_shifts_aggressively",
+                self.scheduler.schedule_builder._balance_target_shifts_aggressively,
+                12  # Alta prioridad
+            ))
+            logging.info(f"⚠️ Activado balance AGRESIVO de targets (desbalance: {workload_imbalance:.1%})")
+        
         # Ajustar prioridad de distribución de fines de semana
         weekend_priority = self.base_priorities['improve_weekend_distribution']
         if weekend_imbalance > 0.20:
