@@ -1122,13 +1122,18 @@ class ScheduleBuilder:
                 # During initial distribution, 7/14 pattern should NOT be absolute
                 # because it blocks too many assignments (e.g., Worker on Thu 1 can't work Thu 8, 15, 22)
                 if self.use_strict_mode:
-                    # In strict mode, allow 7/14 violation if worker needs at least 3 more shifts
-                    # This allows initial distribution to proceed without being completely blocked
-                    if target_deficit >= 3:
-                        logging.debug(f"STRICT: Worker {worker_id} allowed 7/14 pattern override - needs {target_deficit} more shifts")
+                    # Calculate relative deficit percentage
+                    deficit_pct = (target_deficit / max(target_shifts, 1)) * 100 if target_shifts > 0 else 0
+                    
+                    # Allow 7/14 violation if:
+                    # 1. Worker needs at least 2 more shifts (absolute threshold)
+                    # OR 2. Worker has deficit >40% of their target (relative threshold)
+                    # This handles both low-target workers (2-5 shifts) and high-target workers (50+ shifts)
+                    if target_deficit >= 2 or deficit_pct > 40:
+                        logging.debug(f"STRICT: Worker {worker_id} allowed 7/14 pattern override - needs {target_deficit} more shifts ({deficit_pct:.1f}% of target)")
                         continue
                     else:
-                        logging.debug(f"STRICT: Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')}")
+                        logging.debug(f"STRICT: Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')} - deficit {target_deficit} < 2 and {deficit_pct:.1f}% < 40%")
                         return False
                 
                 # RELAXED MODE: Allow violation if worker has significant deficit
@@ -1934,12 +1939,21 @@ class ScheduleBuilder:
             # Try to fill each empty slot using custom worker order
             filled_this_attempt = 0
             
+            # Track why assignments fail (only for attempt 2 to avoid log spam)
+            if attempt == 1:
+                logging.debug(f"=== DEBUGGING ATTEMPT 2 - Why can't we fill more shifts? ===")
+            
             for date_val, post_val in empty_slots:
                 # Skip if already filled
                 if self.schedule[date_val][post_val] is not None:
                     continue
                 
+                # Debug first empty slot in attempt 2
+                if attempt == 1 and filled_this_attempt == 0:
+                    logging.debug(f"Trying to fill slot: {date_val.strftime('%Y-%m-%d')} post {post_val}")
+                
                 # Try workers in the specified order
+                valid_workers_found = 0
                 for worker_data in workers_list:
                     worker_id = worker_data['id']
                     
@@ -1947,18 +1961,25 @@ class ScheduleBuilder:
                     score = self._calculate_worker_score(worker_data, date_val, post_val, relaxation_level=0)
                     
                     if score > float('-inf'):
+                        valid_workers_found += 1
                         # Additional incompatibility check
                         others_now = [w for i, w in enumerate(self.schedule.get(date_val, [])) 
                                      if i != post_val and w is not None]
                         
                         if not self._check_incompatibility_with_list(worker_id, others_now):
+                            if attempt == 1 and filled_this_attempt == 0 and valid_workers_found <= 3:
+                                logging.debug(f"  {worker_id}: BLOCKED by incompatibility")
                             continue
                         
                         if not self._can_assign_worker(worker_id, date_val, post_val):
+                            if attempt == 1 and filled_this_attempt == 0 and valid_workers_found <= 3:
+                                logging.debug(f"  {worker_id}: BLOCKED by _can_assign_worker")
                             continue
                         
                         # CRITICAL: Check ±8% tolerance before assignment
                         if self._would_violate_tolerance(worker_id, date_val, allow_relaxation=False):
+                            if attempt == 1 and filled_this_attempt == 0 and valid_workers_found <= 3:
+                                logging.debug(f"  {worker_id}: BLOCKED by tolerance violation")
                             continue
                         
                         # Assign worker
@@ -1967,7 +1988,15 @@ class ScheduleBuilder:
                         
                         filled_this_attempt += 1
                         made_change = True
+                        
+                        if attempt == 1 and filled_this_attempt == 1:
+                            logging.debug(f"  ✅ {worker_id}: ASSIGNED successfully")
+                        
                         break  # Move to next empty slot
+                
+                # Log if no valid workers found for this slot
+                if attempt == 1 and filled_this_attempt == 0 and valid_workers_found == 0:
+                    logging.debug(f"  ❌ NO valid workers found (all returned -inf score)")
             
             shifts_filled += filled_this_attempt
             
