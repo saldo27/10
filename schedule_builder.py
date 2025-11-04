@@ -1227,6 +1227,7 @@ class ScheduleBuilder:
             
             # Check hard constraints first
             if not self._check_hard_constraints(worker_id, date, post):
+                logging.debug(f"    🚫 {worker_id}: BLOCKED by hard constraints")
                 return float('-inf')
             
             # Check for mandatory shifts
@@ -1237,15 +1238,18 @@ class ScheduleBuilder:
             # Calculate target shift score
             score = self._calculate_target_shift_score(worker, mandatory_dates, relaxation_level)
             if score == float('-inf'):
+                logging.debug(f"    🚫 {worker_id}: BLOCKED by target shift score")
                 return score
             
             # Check gap constraints
             if not self._check_gap_constraints(worker, date, relaxation_level):
+                logging.debug(f"    🚫 {worker_id}: BLOCKED by gap constraints (min gap or 7/14 pattern)")
                 return float('-inf')
             
             # Calculate monthly target score
             monthly_score = self._calculate_monthly_target_score(worker, date, relaxation_level)
             if monthly_score == float('-inf'):
+                logging.debug(f"    🚫 {worker_id}: BLOCKED by monthly target (exceeded monthly max)")
                 return float('-inf')
             score += monthly_score
             
@@ -1253,6 +1257,7 @@ class ScheduleBuilder:
             worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
             overall_score = self._calculate_overall_target_score(worker_id, worker_config, relaxation_level)
             if overall_score == float('-inf'):
+                logging.debug(f"    🚫 {worker_id}: BLOCKED by overall target (exceeded +10% tolerance)")
                 return float('-inf')
             score += overall_score
             
