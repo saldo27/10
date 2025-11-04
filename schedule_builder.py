@@ -1397,8 +1397,16 @@ class ScheduleBuilder:
                     weekend_percentage = 3.0 / 7.0
                     weekend_target = total_target * weekend_percentage
                     
-                    # Calculate ±10% tolerance for weekends
-                    tolerance = 0.10
+                    # Calculate tolerance adjusted by work_percentage
+                    # 100% worker → 10% tolerance, 50% worker → 5% tolerance
+                    base_tolerance = 0.10
+                    work_percentage = worker_config.get('work_percentage', 100)
+                    if work_percentage < 100:
+                        adjusted_tolerance = base_tolerance * (work_percentage / 100.0)
+                        tolerance = max(0.05, adjusted_tolerance)  # Minimum 5%
+                    else:
+                        tolerance = base_tolerance
+                    
                     tolerance_amount = weekend_target * tolerance
                     min_weekend_allowed = max(0, int(weekend_target - tolerance_amount))
                     max_weekend_allowed = int(weekend_target + tolerance_amount + 0.5)
