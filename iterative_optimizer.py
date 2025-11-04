@@ -31,13 +31,13 @@ class IterativeOptimizer:
     until tolerance requirements are met.
     """
     
-    def __init__(self, max_iterations: int = 50, tolerance: float = 0.08):
+    def __init__(self, max_iterations: int = 50, tolerance: float = 0.10):
         """
         Initialize the iterative optimizer with enhanced redistribution algorithms.
         
         Args:
             max_iterations: Maximum number of optimization iterations (default: 50, increased from 30)
-            tolerance: Tolerance percentage (0.08 = 8%)
+            tolerance: Tolerance percentage (0.10 = 10%)
         """
         self.max_iterations = max_iterations
         self.tolerance = tolerance

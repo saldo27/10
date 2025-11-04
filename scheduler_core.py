@@ -47,7 +47,7 @@ class SchedulerCore:
         
         # Initialize tolerance validation and iterative optimization
         self.tolerance_validator = ShiftToleranceValidator(scheduler)
-        self.iterative_optimizer = IterativeOptimizer(max_iterations=50, tolerance=0.08)  # Increased from 20 to 50
+        self.iterative_optimizer = IterativeOptimizer(max_iterations=50, tolerance=0.10)  # Increased tolerance to 10%
         
         # Initialize adaptive iteration manager for intelligent optimization
         self.adaptive_manager = AdaptiveIterationManager(scheduler)
@@ -188,13 +188,13 @@ class SchedulerCore:
             complexity_score = adaptive_config.get('complexity_score', 0)
             
             if complexity_score < 1000:
-                num_attempts = 3
-            elif complexity_score < 5000:
-                num_attempts = 5
-            elif complexity_score < 15000:
-                num_attempts = 7
-            else:
                 num_attempts = 10
+            elif complexity_score < 5000:
+                num_attempts = 20
+            elif complexity_score < 15000:
+                num_attempts = 40
+            else:
+                num_attempts = 60
             
             logging.info(f"Problem complexity: {complexity_score:.0f}")
             logging.info(f"Number of initial distribution attempts: {num_attempts}")
@@ -205,6 +205,8 @@ class SchedulerCore:
             mandatory_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
             mandatory_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
             mandatory_posts = copy.deepcopy(self.scheduler.worker_posts)
+            # CRITICAL: Save locked mandatory shifts to prevent them from being modified
+            mandatory_locked = copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
             
             best_attempt = None
             best_score = -1
@@ -225,12 +227,32 @@ class SchedulerCore:
                 self.scheduler.worker_weekend_counts = copy.deepcopy(mandatory_weekend_counts)
                 self.scheduler.worker_posts = copy.deepcopy(mandatory_posts)
                 
+                # CRITICAL: Update schedule_builder reference to new schedule
+                if hasattr(self.scheduler, 'schedule_builder'):
+                    self.scheduler.schedule_builder.schedule = self.scheduler.schedule
+                    self.scheduler.schedule_builder.worker_assignments = self.scheduler.worker_assignments
+                    # CRITICAL: Restore locked mandatory shifts
+                    self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
+                    
+                logging.info(f"Restored {len(mandatory_locked)} locked mandatory shifts")
+                
+                # Log state before fill
+                empty_before = sum(1 for date, shifts in self.scheduler.schedule.items() 
+                                  for worker in shifts if worker is None)
+                logging.info(f"Empty shifts before fill: {empty_before}")
+                
                 # Apply different strategy for each attempt
                 strategy = self._select_distribution_strategy(attempt_num, num_attempts)
                 logging.info(f"Strategy for attempt {attempt_num}: {strategy['name']}")
                 
                 # Perform initial fill with this strategy
                 success = self._perform_initial_fill_with_strategy(strategy)
+                
+                # Log state after fill
+                empty_after = sum(1 for date, shifts in self.scheduler.schedule.items() 
+                                 for worker in shifts if worker is None)
+                filled_count = empty_before - empty_after
+                logging.info(f"Filled {filled_count} shifts (empty after: {empty_after})")
                 
                 if not success:
                     logging.warning(f"Attempt {attempt_num} failed to fill schedule")
@@ -277,6 +299,8 @@ class SchedulerCore:
                     best_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
                     best_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
                     best_posts = copy.deepcopy(self.scheduler.worker_posts)
+                    # CRITICAL: Save locked mandatory from best attempt
+                    best_locked_mandatory = copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
                     
                     logging.info(f"✨ New best attempt! Score: {score:.2f}")
             
@@ -316,12 +340,19 @@ class SchedulerCore:
             self.scheduler.worker_shift_counts = best_counts
             self.scheduler.worker_weekend_counts = best_weekend_counts
             self.scheduler.worker_posts = best_posts
+            # CRITICAL: Restore locked mandatory from best attempt
+            self.scheduler.schedule_builder._locked_mandatory = best_locked_mandatory
+            
+            logging.info(f"Restored {len(best_locked_mandatory)} locked mandatory shifts from best attempt")
             
             # Synchronize tracking data
             self.scheduler.schedule_builder._synchronize_tracking_data()
             
             # Save as current best
             self.scheduler.schedule_builder._save_current_as_best(initial=False)
+            
+            # Export initial calendar PDF before optimization
+            self._export_initial_calendar_pdf()
             
             logging.info("=" * 80)
             logging.info("✅ Multiple initial distribution phase completed successfully")
@@ -794,6 +825,68 @@ class SchedulerCore:
         except Exception as e:
             logging.error(f"Error during tolerance optimization: {e}", exc_info=True)
             logging.info("Continuing with original schedule")
+    
+    def _export_initial_calendar_pdf(self) -> None:
+        """
+        Export the initial calendar (before iterative optimization) to PDF.
+        Creates one PDF with all months, each month on a separate landscape A4 page.
+        """
+        try:
+            logging.info("\n" + "=" * 80)
+            logging.info("📄 GENERATING INITIAL CALENDAR PDF")
+            logging.info("=" * 80)
+            
+            # Count and log schedule stats before export
+            total_shifts = sum(len(shifts) for shifts in self.scheduler.schedule.values())
+            filled_shifts = sum(1 for shifts in self.scheduler.schedule.values() 
+                              for worker in shifts if worker is not None)
+            empty_shifts = total_shifts - filled_shifts
+            
+            logging.info(f"Schedule statistics at PDF export:")
+            logging.info(f"  Total shifts: {total_shifts}")
+            logging.info(f"  Filled shifts: {filled_shifts}")
+            logging.info(f"  Empty shifts: {empty_shifts}")
+            logging.info(f"  Fill rate: {(filled_shifts/total_shifts*100):.1f}%")
+            
+            # Import PDF exporter
+            from pdf_exporter import PDFExporter
+            
+            # Prepare configuration for PDF exporter
+            schedule_config = {
+                'schedule': self.scheduler.schedule,
+                'workers_data': self.scheduler.workers_data,
+                'num_shifts': self.scheduler.num_shifts,
+                'holidays': self.scheduler.holidays
+            }
+            
+            # Create exporter instance
+            pdf_exporter = PDFExporter(schedule_config)
+            
+            # Generate filename with timestamp and "INITIAL" marker
+            start_date = self.scheduler.start_date
+            end_date = self.scheduler.end_date
+            period_str = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'schedule_INITIAL_{period_str}_{timestamp}.pdf'
+            
+            # Export all months to single PDF (landscape A4, one month per page)
+            result_file = pdf_exporter.export_all_months_calendar(filename=filename)
+            
+            if result_file:
+                logging.info(f"✅ Initial calendar PDF generated successfully: {result_file}")
+                logging.info(f"   Format: Landscape A4, one month per page")
+                logging.info(f"   Period: {start_date.strftime('%d-%m-%Y')} to {end_date.strftime('%d-%m-%Y')}")
+            else:
+                logging.warning("⚠️  Initial calendar PDF generation returned no file")
+            
+            logging.info("=" * 80)
+            
+        except ImportError as e:
+            logging.error(f"❌ Could not import PDF exporter: {e}")
+            logging.info("Continuing without initial PDF export")
+        except Exception as e:
+            logging.error(f"❌ Error generating initial calendar PDF: {str(e)}", exc_info=True)
+            logging.info("Continuing without initial PDF export")
     
     def _select_distribution_strategy(self, attempt_num: int, total_attempts: int) -> Dict[str, Any]:
         """
