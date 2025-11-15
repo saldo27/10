@@ -273,6 +273,72 @@ class ScheduleBuilder:
             return date in mandatory_dates
         except:
             return False
+    
+    def _is_slot_protected_mandatory(self, date, post):
+        """
+        CRITICAL: Verificación CENTRALIZADA de protección mandatory.
+        Este método DEBE ser llamado ANTES de cualquier modificación de un slot.
+        
+        Verifica si un slot específico (date, post) está ocupado por un turno mandatory
+        que NO puede ser modificado bajo NINGUNA circunstancia.
+        
+        Returns:
+            tuple: (is_protected, worker_id)
+                - is_protected: True si el slot está protegido
+                - worker_id: ID del trabajador si está protegido, None en caso contrario
+        """
+        # Verificar que el slot existe y tiene un trabajador asignado
+        if date not in self.schedule:
+            return False, None
+        
+        if len(self.schedule[date]) <= post:
+            return False, None
+        
+        worker_id = self.schedule[date][post]
+        if worker_id is None:
+            return False, None
+        
+        # Verificar si está en el conjunto de mandatory bloqueados
+        if (worker_id, date) in self._locked_mandatory:
+            logging.debug(f"🔒 PROTECTED: Slot ({date.strftime('%Y-%m-%d')}, post {post}) is LOCKED MANDATORY for {worker_id}")
+            return True, worker_id
+        
+        # Verificar si es mandatory según la configuración del trabajador
+        if self._is_mandatory(worker_id, date):
+            logging.debug(f"🔒 PROTECTED: Slot ({date.strftime('%Y-%m-%d')}, post {post}) is CONFIG MANDATORY for {worker_id}")
+            return True, worker_id
+        
+        return False, None
+    
+    def _can_modify_assignment(self, worker_id, date, operation_name="unknown"):
+        """
+        CRITICAL: Verificación CENTRALIZADA antes de modificar/eliminar una asignación.
+        
+        Este método DEBE ser llamado ANTES de:
+        - Mover un trabajador a otra fecha
+        - Reasignar un trabajador a otro puesto
+        - Eliminar una asignación
+        - Intercambiar trabajadores (swap)
+        
+        Args:
+            worker_id: ID del trabajador
+            date: Fecha de la asignación
+            operation_name: Nombre de la operación para logging
+        
+        Returns:
+            bool: True si se puede modificar, False si está protegido
+        """
+        # Verificar locked mandatory
+        if (worker_id, date) in self._locked_mandatory:
+            logging.info(f"🚫 BLOCKED {operation_name}: Cannot modify LOCKED MANDATORY assignment for {worker_id} on {date.strftime('%Y-%m-%d')}")
+            return False
+        
+        # Verificar config mandatory
+        if self._is_mandatory(worker_id, date):
+            logging.info(f"🚫 BLOCKED {operation_name}: Cannot modify CONFIG MANDATORY assignment for {worker_id} on {date.strftime('%Y-%m-%d')}")
+            return False
+        
+        return True
             
     def _is_worker_unavailable(self, worker_id, date):
         """
@@ -359,20 +425,19 @@ class ScheduleBuilder:
             logging.debug(f"Worker {worker_id} (part-time {work_percentage}%): Using adjusted tolerance {tolerance*100:.1f}%")
         
         tolerance_amount = target_shifts * tolerance
-        max_allowed = int(target_shifts + tolerance_amount + 0.5)  # Round up
+        max_allowed = int(target_shifts + tolerance_amount)  # Floor - no round up
         
         # ONLY check UPPER bound - never block workers with deficit
         if assignments_after > max_allowed:
+            # SIEMPRE bloquear excesos de tolerancia, sin excepción
+            work_pct_msg = f" (part-time {work_percentage}%)" if work_percentage < 100 else ""
             if allow_relaxation:
-                work_pct_msg = f" (part-time {work_percentage}%)" if work_percentage < 100 else ""
-                logging.warning(f"⚠️ Tolerance violation: {worker_id}{work_pct_msg} would have {assignments_after} shifts "
-                              f"(max allowed: {max_allowed}, target: {target_shifts}) - ALLOWED due to relaxation")
-                return False  # Allow but warn
+                logging.warning(f"⚠️ BLOCKED even with relaxation: {worker_id}{work_pct_msg} would have {assignments_after} shifts "
+                              f"(max allowed: {max_allowed}, target: {target_shifts})")
             else:
-                work_pct_msg = f" (part-time {work_percentage}%)" if work_percentage < 100 else ""
                 logging.debug(f"🚫 BLOCKED: {worker_id}{work_pct_msg} would exceed +{tolerance*100:.1f}% tolerance "
                             f"({assignments_after} > {max_allowed}, target: {target_shifts})")
-                return True  # BLOCK
+            return True  # SIEMPRE BLOQUEAR
         
         # If worker is BELOW target, encourage assignment (never block)
         if assignments_after < target_shifts:
@@ -1662,17 +1727,12 @@ class ScheduleBuilder:
                     if len(self.schedule[date]) <= post: self.schedule[date].extend([None] * (post + 1 - len(self.schedule[date])))
 
                     if self.schedule[date][post] is None:
-                        # CRITICAL: For MANDATORY assignments, only check HARD constraints
-                        # (incompatibility and unavailability), NOT soft constraints like gap or patterns
-                        # because mandatory_days MUST be assigned regardless of normal constraints
+                        # CRITICAL: For MANDATORY assignments, ONLY check work_periods/unavailability
+                        # INCOMPATIBILITY DOES NOT APPLY to mandatory shifts - if two incompatible
+                        # workers both have mandatory on the same day, BOTH must be assigned
+                        # because mandatory_days override ALL other constraints (including incompatibility)
                         
-                        # Check incompatibility before placing (HARD constraint)
-                        others_on_date = [w for i, w in enumerate(self.schedule.get(date, [])) if i != post and w is not None]
-                        if not self._check_incompatibility_with_list(worker_id, others_on_date):
-                            logging.debug(f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} post {post} incompatible. Trying next post.")
-                            continue
-                        
-                        # Check if worker is unavailable (days off, work periods) - HARD constraint
+                        # Check if worker is unavailable (days off, work periods) - ONLY HARD constraint for mandatory
                         if self._is_worker_unavailable(worker_id, date):
                             logging.warning(f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} conflicts with days_off or work_periods. This is a configuration error.")
                             continue
@@ -1683,15 +1743,49 @@ class ScheduleBuilder:
                         self.schedule[date][post] = worker_id
                         self.worker_assignments.setdefault(worker_id, set()).add(date) # Use self.worker_assignments
                         self.scheduler._update_tracking_data(worker_id, date, post, removing=False) # Call scheduler's central update
-                        self._locked_mandatory.add((worker_id, date)) # Lock it
-                        logging.debug(f"Assigned worker {worker_id} to {date.strftime('%Y-%m-%d')} post {post} (mandatory) and locked.")
+                        
+                        # CRITICAL: Lock the mandatory assignment IMMEDIATELY
+                        self._locked_mandatory.add((worker_id, date))
+                        logging.info(f"🔒 MANDATORY ASSIGNED AND LOCKED: {worker_id} → {date.strftime('%Y-%m-%d')} post {post}")
+                        
                         assigned_count += 1
                         placed_mandatory = True
                         break 
                 if not placed_mandatory:
                      logging.warning(f"Could not place mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')}. All posts filled or incompatible.")
         
-        logging.info(f"Finished mandatory guard assignment. Assigned {assigned_count} shifts.")
+        # Log summary of locked mandatory shifts
+        logging.info(f"=" * 80)
+        logging.info(f"MANDATORY ASSIGNMENT SUMMARY")
+        logging.info(f"  Total mandatory shifts assigned: {assigned_count}")
+        logging.info(f"  Total locked mandatory: {len(self._locked_mandatory)}")
+        logging.info(f"=" * 80)
+        
+        # Verify that all assigned mandatory are in locked set
+        verification_failed = 0
+        for worker in self.workers_data:
+            worker_id = worker['id']
+            mandatory_str = worker.get('mandatory_days', '')
+            try:
+                dates = self.date_utils.parse_dates(mandatory_str)
+            except:
+                continue
+            
+            for date in dates:
+                if not (self.start_date <= date <= self.end_date):
+                    continue
+                if date in self.schedule and worker_id in self.schedule[date]:
+                    if (worker_id, date) not in self._locked_mandatory:
+                        logging.error(f"❌ CRITICAL: Mandatory {worker_id} on {date.strftime('%Y-%m-%d')} NOT in locked set!")
+                        verification_failed += 1
+                        # Add it now
+                        self._locked_mandatory.add((worker_id, date))
+        
+        if verification_failed > 0:
+            logging.warning(f"⚠️ Fixed {verification_failed} mandatory assignments that were not locked")
+        else:
+            logging.info(f"✅ All mandatory assignments verified and locked")
+        
         # No _save_current_as_best here; scheduler's generate_schedule will handle it after this.
         # self._synchronize_tracking_data() # Ensure builder's view is also synced if it has separate copies (it shouldn't for core data)
         return assigned_count > 0
@@ -1754,6 +1848,13 @@ class ScheduleBuilder:
                 if self.schedule[date][post] is not None:
                     continue
             assigned_this_post = False
+            
+            # CRITICAL: Verificar si el slot está protegido por mandatory
+            is_protected, protected_worker = self._is_slot_protected_mandatory(date, post)
+            if is_protected:
+                logging.debug(f"[Pass 1] Skipping protected mandatory slot: {date.strftime('%Y-%m-%d')} post {post} (worker: {protected_worker})")
+                continue  # No intentar modificar este slot
+            
             for relax_level in range(relaxation_level + 1): 
                 candidates = self._get_candidates(date, post, relax_level)
 
@@ -1806,6 +1907,11 @@ class ScheduleBuilder:
                             assigned_this_post = True
                             break # Found a compatible worker for this post, break candidate loop
                         else:
+                            # CRITICAL: Verify slot is not protected by mandatory
+                            existing_worker = self.schedule[date][post]
+                            if (existing_worker, date) in self._locked_mandatory or self._is_mandatory(existing_worker, date):
+                                logging.warning(f"🔒 BLOCKED: Cannot overwrite MANDATORY {existing_worker} on {date.strftime('%Y-%m-%d')} post {post}")
+                                continue  # Try next candidate
                             # This case should be rare if logic is correct, but log it
                             logging.warning(f"  Slot {post} on {date} was unexpectedly filled before assigning candidate {worker_id}. Current value: {self.schedule[date][post]}")
                             # Continue to the next candidate, as this one cannot be placed here anymore
@@ -1944,6 +2050,13 @@ class ScheduleBuilder:
                         elif self._would_violate_tolerance(worker_id_to_assign, date_val, allow_relaxation=(relax_lvl_attempt >= 2)):
                             logging.debug(f"      -> Pass1 Assignment REJECTED (Tolerance): W:{worker_id_to_assign} for {date_val.strftime('%Y-%m-%d')} P:{post_val} at Relax {relax_lvl_attempt}")
                         else:
+                            # CRITICAL: Final check - is slot protected by mandatory?
+                            if self.schedule[date_val][post_val] is not None:
+                                existing = self.schedule[date_val][post_val]
+                                if (existing, date_val) in self._locked_mandatory or self._is_mandatory(existing, date_val):
+                                    logging.warning(f"🔒 BLOCKED Pass1: Cannot overwrite MANDATORY {existing} on {date_val.strftime('%Y-%m-%d')} post {post_val}")
+                                    continue  # Skip this assignment
+                            
                             self.schedule[date_val][post_val] = worker_id_to_assign
                             self.worker_assignments.setdefault(worker_id_to_assign, set()).add(date_val)
                             self.scheduler._update_tracking_data(worker_id_to_assign, date_val, post_val, removing=False)
@@ -1979,11 +2092,8 @@ class ScheduleBuilder:
                     
                     original_W_assignments = list(self.worker_assignments[worker_W_id]); random.shuffle(original_W_assignments)
                     for date_conflict in original_W_assignments:
-                        # CRITICAL: Never swap/move mandatory assignments
-                        if self._is_mandatory(worker_W_id, date_conflict):
-                            continue
-                        # Legacy check for locked mandatory
-                        if (worker_W_id, date_conflict) in self._locked_mandatory: 
+                        # CRITICAL: Verificación centralizada de protección mandatory
+                        if not self._can_modify_assignment(worker_W_id, date_conflict, "swap_fill_empty"):
                             continue
                         try: 
                             post_conflict = self.schedule[date_conflict].index(worker_W_id)
@@ -2045,6 +2155,11 @@ class ScheduleBuilder:
                             
                             logging.info(f"[Pass 2 Swap Attempt] W:{worker_W_id} ({date_conflict.strftime('%Y-%m-%d')},P{post_conflict}) -> ({date_empty.strftime('%Y-%m-%d')},P{post_empty}); X:{worker_X_id} takes W's original spot.")
                             
+                            # CRITICAL: Double-check before removing W (should already be checked, but paranoid)
+                            if not self._can_modify_assignment(worker_W_id, date_conflict, "pass2_swap_remove"):
+                                logging.error(f"🔒 CRITICAL: Attempted to remove MANDATORY {worker_W_id} in Pass2 swap! Aborting swap.")
+                                continue
+                            
                             # 1. Remove W from original spot
                             self.schedule[date_conflict][post_conflict] = None
                             if worker_W_id in self.worker_assignments and date_conflict in self.worker_assignments[worker_W_id]:
@@ -2090,7 +2205,11 @@ class ScheduleBuilder:
         Returns:
             bool: True if any shifts were filled
         """
-        logging.info(f"Filling empty shifts with custom worker order ({len(workers_list)} workers)")
+        logging.info(f"=" * 80)
+        logging.info(f"INITIAL FILL WITH CUSTOM WORKER ORDER")
+        logging.info(f"  Workers in list: {len(workers_list)}")
+        logging.info(f"  Locked mandatory shifts: {len(self._locked_mandatory)}")
+        logging.info(f"=" * 80)
         
         shifts_filled = 0
         made_change = False
@@ -2109,6 +2228,22 @@ class ScheduleBuilder:
             
             if attempt == 0:
                 logging.info(f"Starting with {len(empty_slots)} empty shifts")
+                # Count how many are actually protected
+                protected_count = 0
+                truly_empty_count = 0
+                for d, p in empty_slots:
+                    if d in self.schedule and len(self.schedule[d]) > p:
+                        if self.schedule[d][p] is not None:
+                            existing = self.schedule[d][p]
+                            if (existing, d) in self._locked_mandatory or self._is_mandatory(existing, d):
+                                protected_count += 1
+                            else:
+                                # Filled but not mandatory
+                                pass
+                        else:
+                            truly_empty_count += 1
+                logging.info(f"  Protected mandatory slots: {protected_count}")
+                logging.info(f"  Truly empty slots to fill: {truly_empty_count}")
             
             # Sort chronologically
             empty_slots.sort(key=lambda x: (x[0], x[1]))
@@ -2121,8 +2256,25 @@ class ScheduleBuilder:
                 logging.debug(f"=== DEBUGGING ATTEMPT 2 - Why can't we fill more shifts? ===")
             
             for date_val, post_val in empty_slots:
-                # Skip if already filled
+                # CRITICAL: Verificar si el slot está protegido por mandatory
+                # Primero verificar si el slot ya está lleno
+                if date_val not in self.schedule or len(self.schedule[date_val]) <= post_val:
+                    logging.warning(f"[Initial Fill] Invalid slot reference: {date_val.strftime('%Y-%m-%d')} post {post_val}")
+                    continue
+                    
+                # Si ya está lleno, verificar si es mandatory
                 if self.schedule[date_val][post_val] is not None:
+                    existing_worker = self.schedule[date_val][post_val]
+                    # Verificar si es mandatory bloqueado
+                    if (existing_worker, date_val) in self._locked_mandatory:
+                        logging.debug(f"[Initial Fill] Slot {date_val.strftime('%Y-%m-%d')} post {post_val} is LOCKED MANDATORY for {existing_worker}")
+                        continue
+                    # También verificar si es mandatory por configuración
+                    if self._is_mandatory(existing_worker, date_val):
+                        logging.warning(f"[Initial Fill] Slot {date_val.strftime('%Y-%m-%d')} post {post_val} is CONFIG MANDATORY for {existing_worker} but NOT in locked set - BLOCKING anyway")
+                        continue
+                    # Si está lleno pero NO es mandatory, lo marcamos como disponible para el loop siguiente
+                    logging.debug(f"[Initial Fill] Slot {date_val.strftime('%Y-%m-%d')} post {post_val} filled with {existing_worker} (non-mandatory)")
                     continue
                 
                 # Debug first empty slot in attempt 2
@@ -2158,6 +2310,13 @@ class ScheduleBuilder:
                             if attempt == 1 and filled_this_attempt == 0 and valid_workers_found <= 3:
                                 logging.debug(f"  {worker_id}: BLOCKED by tolerance violation")
                             continue
+                        
+                        # CRITICAL: Final check - ensure slot not protected
+                        if self.schedule[date_val][post_val] is not None:
+                            existing = self.schedule[date_val][post_val]
+                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(existing, date_val):
+                                logging.warning(f"🔒 BLOCKED Initial Fill: Cannot overwrite MANDATORY {existing} on {date_val.strftime('%Y-%m-%d')} post {post_val}")
+                                continue
                         
                         # Assign worker
                         self.schedule[date_val][post_val] = worker_id
@@ -2203,9 +2362,8 @@ class ScheduleBuilder:
         CRITICAL: If conflict_date is a MANDATORY assignment for worker_W_id,
         NO swap should be attempted. Return None immediately.
         """
-        # CRITICAL: Check if this is a mandatory assignment - NEVER swap mandatory days
-        if self._is_mandatory(worker_W_id, conflict_date):
-            logging.info(f"BLOCKED swap attempt: {conflict_date.strftime('%Y-%m-%d')} is MANDATORY for worker {worker_W_id}")
+        # CRITICAL: Verificación centralizada de protección mandatory
+        if not self._can_modify_assignment(worker_W_id, conflict_date, "swap_candidate_search"):
             return None
         
         potential_X_workers = [
@@ -2333,14 +2491,8 @@ class ScheduleBuilder:
             possible_shifts = []
     
             for date_val in sorted(self.scheduler.worker_assignments.get(over_worker_id, set())): # Renamed date
-                # never touch a locked mandatory
-                if (over_worker_id, date_val) in self._locked_mandatory:
-                    logging.debug(f"Skipping workload‐balance move for mandatory shift: {over_worker_id} on {date_val}")
-                    continue
-
-                # --- MANDATORY CHECK --- (you already had this, but now enforced globally)
-                # skip if this date is mandatory for this worker
-                if self._is_mandatory(over_worker_id, date_val):
+                # CRITICAL: Verificación centralizada de protección mandatory
+                if not self._can_modify_assignment(over_worker_id, date_val, "balance_workloads"):
                     continue
 
             
@@ -2373,8 +2525,8 @@ class ScheduleBuilder:
                 for under_worker_id, _ in underloaded:
                     # ... (check if under_worker already assigned) ...
                     if self._can_assign_worker(under_worker_id, date_val, post_val):
-                        # remove only if it wasn't locked mandatory
-                        if (over_worker_id, date_val) in self._locked_mandatory:
+                        # CRITICAL: Verify we can modify the current assignment
+                        if not self._can_modify_assignment(over_worker_id, date_val, "balance_workloads_remove"):
                             continue
                         self.scheduler.schedule[date_val][post_val] = under_worker_id
                         self.scheduler.worker_assignments[over_worker_id].remove(date_val)
@@ -2488,12 +2640,8 @@ class ScheduleBuilder:
                 if weekday not in overloaded_weekdays:
                     continue
                 
-                # CRITICAL: Skip mandatory assignments - they cannot be moved
-                if self._is_mandatory(worker_id, date):
-                    continue
-                
-                # Skip locked mandatory assignments (legacy check)
-                if (worker_id, date) in self._locked_mandatory:
+                # CRITICAL: Verificación centralizada de protección mandatory
+                if not self._can_modify_assignment(worker_id, date, "balance_weekday_distribution"):
                     continue
                 
                 # Find the post this worker is assigned to
@@ -2530,6 +2678,11 @@ class ScheduleBuilder:
                                          if w is not None and idx != post and w != worker_id]
                         if not self._check_incompatibility_with_list(other_worker_id, others_on_date):
                             logging.debug(f"Weekly balance swap rejected: {other_worker_id} incompatible on {date.strftime('%Y-%m-%d')}")
+                            continue
+                        
+                        # CRITICAL: Final check before modification
+                        if not self._can_modify_assignment(worker_id, date, "balance_weekday_final"):
+                            logging.warning(f"🔒 BLOCKED: Cannot modify MANDATORY {worker_id} on {date.strftime('%Y-%m-%d')}")
                             continue
                         
                         # Remove from original worker
@@ -2857,14 +3010,9 @@ class ScheduleBuilder:
                 random.shuffle(possible_dates_to_move_from)
 
                 for special_day_to_reassign in possible_dates_to_move_from:
-                    # --- MANDATORY CHECKS ---
-                    if (over_worker_id, special_day_to_reassign) in self._locked_mandatory:
-                        logging.debug(f"Cannot move worker {over_worker_id} from locked mandatory shift on {special_day_to_reassign.strftime('%Y-%m-%d')} for balancing.")
+                    # CRITICAL: Verificación centralizada de protección mandatory
+                    if not self._can_modify_assignment(over_worker_id, special_day_to_reassign, "balance_weekend_shifts"):
                         continue
-                    if self._is_mandatory(over_worker_id, special_day_to_reassign): 
-                        logging.debug(f"Cannot move worker {over_worker_id} from config-mandatory shift on {special_day_to_reassign.strftime('%Y-%m-%d')} for balancing.")
-                        continue
-                    # --- END MANDATORY CHECKS ---
                     
                     try:
                         # Ensure the worker is actually in the schedule for this date and find post
@@ -3321,6 +3469,11 @@ class ScheduleBuilder:
                         
                         # Verificar si under_worker puede tomar esta posición
                         if self._can_assign_worker(under_worker, over_date, post_idx):
+                            # CRITICAL: Verificación final de protección mandatory
+                            if not self._can_modify_assignment(over_worker, over_date, "swap_special_day"):
+                                logging.warning(f"🔒 BLOCKED: Cannot swap MANDATORY {over_worker} on {over_date.strftime('%Y-%m-%d')}")
+                                continue
+                            
                             # Realizar el intercambio
                             self.schedule[over_date][post_idx] = under_worker
                             
@@ -3604,7 +3757,7 @@ class ScheduleBuilder:
                     if (self._is_weekend_day(date) and 
                         date in self.schedule and
                         over_worker_id in self.schedule[date] and
-                        not self._is_mandatory(over_worker_id, date)):
+                        self._can_modify_assignment(over_worker_id, date, "rebalance_weekend")):
                         post = self.schedule[date].index(over_worker_id)
                         moveable_weekend_shifts.append((date, post))
                 
@@ -3624,6 +3777,11 @@ class ScheduleBuilder:
                         
                         # Check if assignment is valid
                         if self._can_assign_worker(under_worker_id, date, post):
+                            # CRITICAL: Final check - can we modify this assignment?
+                            if not self._can_modify_assignment(over_worker_id, date, "rebalance_weekend_final"):
+                                logging.warning(f"🔒 BLOCKED: Cannot modify MANDATORY {over_worker_id} on {date.strftime('%Y-%m-%d')}")
+                                continue
+                            
                             # Perform the reassignment
                             self.schedule[date][post] = under_worker_id
                             
@@ -3731,9 +3889,8 @@ class ScheduleBuilder:
         random.shuffle(assignments)
     
         for date in assignments[:max_attempts]:
-            if (overloaded_worker_id, date) in self._locked_mandatory:
-                continue
-            if self._is_mandatory(overloaded_worker_id, date):
+            # CRITICAL: Verificación centralizada de protección mandatory
+            if not self._can_modify_assignment(overloaded_worker_id, date, "redistribute_excess"):
                 continue
             
             try:
@@ -3758,6 +3915,11 @@ class ScheduleBuilder:
                     if not self._check_incompatibility_with_list(under_worker_id, others_on_date):
                         logging.debug(f"Redistribution rejected: {under_worker_id} incompatible on {date.strftime('%Y-%m-%d')}")
                         continue  # Try next underloaded worker
+                    
+                    # CRITICAL: Final check before transfer
+                    if not self._can_modify_assignment(overloaded_worker_id, date, "redistribute_excess_final"):
+                        logging.warning(f"🔒 BLOCKED: Cannot transfer MANDATORY {overloaded_worker_id} on {date.strftime('%Y-%m-%d')}")
+                        continue
                     
                     # Make the transfer
                     self.schedule[date][post] = under_worker_id
@@ -4005,8 +4167,8 @@ class ScheduleBuilder:
                 worker_A_id = str(worker_currently_in_last_post_id)
                 worker_A_deviation = worker_deviation.get(worker_A_id, 0)
                 
-                # CRITICAL: Never swap mandatory assignments
-                if self._is_mandatory(worker_A_id, date_to_adjust):
+                # CRITICAL: Verificación centralizada de protección mandatory
+                if not self._can_modify_assignment(worker_A_id, date_to_adjust, "adjust_last_post"):
                     continue
 
                 # Only try to swap if this worker is overloaded
@@ -4035,9 +4197,11 @@ class ScheduleBuilder:
                     potential_swap_partners.sort(key=lambda x: x[2])
 
                     for worker_B_id, worker_B_original_post_idx, worker_B_deviation in potential_swap_partners:
-                        # CRITICAL: Never swap mandatory assignments
-                        if self._is_mandatory(worker_B_id, date_to_adjust):
-                            continue
+                        # CRITICAL: Verificación centralizada de protección mandatory para ambos trabajadores
+                        if not self._can_modify_assignment(worker_A_id, date_to_adjust, "adjust_last_post_A"):
+                            break  # Si A no se puede mover, salir del loop de partners
+                        if not self._can_modify_assignment(worker_B_id, date_to_adjust, "adjust_last_post_B"):
+                            continue  # Intentar con el siguiente partner
                             
                         # Check if this swap would improve overall balance
                         new_A_deviation = worker_A_deviation - 1  # A loses a last post
@@ -4076,6 +4240,14 @@ class ScheduleBuilder:
                             # (Swapping posts on same day doesn't create 7/14 issues)
                             
                             if valid_swap:
+                                # CRITICAL: Final verification before swap (should already be checked, but be extra safe)
+                                if not self._can_modify_assignment(worker_A_id, date_to_adjust, "adjust_last_post_A_final"):
+                                    logging.warning(f"🔒 BLOCKED: Cannot swap MANDATORY {worker_A_id} on {date_to_adjust.strftime('%Y-%m-%d')}")
+                                    continue
+                                if not self._can_modify_assignment(worker_B_id, date_to_adjust, "adjust_last_post_B_final"):
+                                    logging.warning(f"🔒 BLOCKED: Cannot swap MANDATORY {worker_B_id} on {date_to_adjust.strftime('%Y-%m-%d')}")
+                                    continue
+                                
                                 # Perform the swap
                                 logging.info(f"[IMPROVED Iter {iteration+1}] Beneficial swap on {date_to_adjust.strftime('%Y-%m-%d')}: "
                                            f"Worker {worker_A_id} (dev {worker_A_deviation:.2f}→{new_A_deviation:.2f}, P{last_post_idx_on_day}→P{worker_B_original_post_idx}) "

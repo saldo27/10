@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import logging
 import random
 import copy
+import json
 from typing import Dict, List, Set, Optional, Tuple, Any
 
 from scheduler_config import setup_logging, SchedulerConfig
@@ -1177,6 +1178,15 @@ class Scheduler:
                 
                     while len(self.schedule[date]) <= post:
                         self.schedule[date].append(None)
+                    
+                    # CRITICAL: Verify slot is not protected by mandatory
+                    if self.schedule[date][post] is not None:
+                        existing = self.schedule[date][post]
+                        if hasattr(self, 'schedule_builder'):
+                            if ((existing, date) in self.schedule_builder._locked_mandatory or 
+                                self.schedule_builder._is_mandatory(existing, date)):
+                                logging.warning(f"🔒 BLOCKED: Cannot overwrite MANDATORY {existing} on {date.strftime('%Y-%m-%d')} post {post}")
+                                continue
                 
                     # Assign the worker
                     self.schedule[date][post] = worker_id
@@ -1356,6 +1366,12 @@ class Scheduler:
                                 break
                 
                     if shift_num is not None:
+                        # CRITICAL: Verify we can modify this assignment (never remove mandatory)
+                        if hasattr(self, 'schedule_builder'):
+                            if not self.schedule_builder._can_modify_assignment(worker_id, date_to_unassign, "fix_constraint_rest"):
+                                logging.warning(f"🔒 BLOCKED: Cannot unassign MANDATORY {worker_id} from {date_to_unassign.strftime('%Y-%m-%d')}")
+                                continue
+                        
                         # Unassign this worker
                         self.schedule[date_to_unassign][shift_num] = None
                         self.worker_assignments[worker_id].remove(date_to_unassign)
@@ -1398,6 +1414,12 @@ class Scheduler:
                                 break
                 
                     if shift_num is not None:
+                        # CRITICAL: Verify we can modify this assignment (never remove mandatory)
+                        if hasattr(self, 'schedule_builder'):
+                            if not self.schedule_builder._can_modify_assignment(worker_to_unassign, date, "fix_constraint_incompat"):
+                                logging.warning(f"🔒 BLOCKED: Cannot unassign MANDATORY {worker_to_unassign} from {date.strftime('%Y-%m-%d')}")
+                                continue
+                        
                         # Unassign this worker
                         self.schedule[date][shift_num] = None
                         self.worker_assignments[worker_to_unassign].remove(date)
@@ -1887,6 +1909,12 @@ class Scheduler:
                               # Find the post index IN THE ORIGINAL schedule[date] list
                               post_to_remove = self.schedule[date].index(worker_to_remove)
 
+                              # CRITICAL: Final check - verify we can remove this worker
+                              if hasattr(self, 'schedule_builder'):
+                                  if not self.schedule_builder._can_modify_assignment(worker_to_remove, date, "validation_fix_incompat"):
+                                      logging.error(f"🔒 BLOCKED: Cannot remove MANDATORY {worker_to_remove} from {date.strftime('%Y-%m-%d')} - This is a configuration error!")
+                                      continue
+                              
                               # Remove the worker from schedule
                               self.schedule[date][post_to_remove] = None
 
@@ -1965,6 +1993,12 @@ class Scheduler:
             # Now perform removals for gap violations
             for date_rem, post_rem in indices_to_remove_gap:
                  if date_rem in self.schedule and len(self.schedule[date_rem]) > post_rem and self.schedule[date_rem][post_rem] == worker_id:
+                      # CRITICAL: Final verification - never remove mandatory
+                      if hasattr(self, 'schedule_builder'):
+                          if not self.schedule_builder._can_modify_assignment(worker_id, date_rem, "validation_fix_gap"):
+                              logging.error(f"🔒 BLOCKED: Cannot remove MANDATORY {worker_id} from {date_rem.strftime('%Y-%m-%d')} - Gap violation cannot be fixed!")
+                              continue
+                      
                       self.schedule[date_rem][post_rem] = None
                       self.worker_assignments[worker_id].discard(date_rem)
                       # --- ADDED: Update Tracking Data ---
@@ -2099,6 +2133,59 @@ class Scheduler:
                     f.write(f"{worker['name']} ({worker_id}): {shift_count} turnos, {weekend_count} fines de semana\n")
         
         logging.info(f"Schedule exported to {filename}")
+        return filename
+    
+    def export_schedule_json(self, filename=None):
+        """
+        Export the complete schedule to JSON format
+        
+        Args:
+            filename: Output filename (optional, auto-generated if not provided)
+        Returns:
+            str: Name of the generated file
+        """
+        if filename is None:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f'schedule_complete_{timestamp}.json'
+        
+        # Convert schedule to serializable format
+        schedule_serializable = {}
+        for date, workers in self.schedule.items():
+            date_str = date.strftime('%Y-%m-%d')
+            schedule_serializable[date_str] = workers
+        
+        # Convert worker_assignments to serializable format
+        worker_assignments_serializable = {}
+        for worker_id, dates in self.worker_assignments.items():
+            worker_assignments_serializable[worker_id] = [d.strftime('%Y-%m-%d') for d in sorted(dates)]
+        
+        # Build complete data structure
+        data = {
+            'metadata': {
+                'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'period_start': self.start_date.strftime('%Y-%m-%d'),
+                'period_end': self.end_date.strftime('%Y-%m-%d'),
+                'total_days': (self.end_date - self.start_date).days + 1,
+                'num_shifts_per_day': self.num_shifts,
+                'total_workers': len(self.workers_data)
+            },
+            'schedule': schedule_serializable,
+            'worker_assignments': worker_assignments_serializable,
+            'workers_data': self.workers_data,
+            'config': {
+                'start_date': self.start_date.strftime('%Y-%m-%d'),
+                'end_date': self.end_date.strftime('%Y-%m-%d'),
+                'num_shifts': self.num_shifts,
+                'gap_between_shifts': self.gap_between_shifts,
+                'max_consecutive_weekends': self.max_consecutive_weekends
+            }
+        }
+        
+        # Save to file
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        logging.info(f"Complete schedule exported to JSON: {filename}")
         return filename
     
     def generate_worker_report(self, worker_id, save_to_file=False):

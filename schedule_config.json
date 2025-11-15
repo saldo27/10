@@ -1,0 +1,372 @@
+{
+  "start_date": "22-12-2025",
+  "end_date": "01-03-2026",
+  "num_shifts": 4,
+  "workers_data": [
+    {
+      "id": "1",
+      "name": "ANGELA",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "01-01-2026",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "2",
+      "name": "LOLA",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "25-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 27-12-2025; 05-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "3",
+      "name": "JOSE",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "01-01-2026",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "4",
+      "name": "JULIA",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "5",
+      "name": "KIKO",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "01-01-2026; 06-01-2026",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 01-03-2026",
+      "incompatible_with": [
+        "13",
+        "22",
+        "24",
+        "25"
+      ],
+      "monthly_targets": {}
+    },
+    {
+      "id": "6",
+      "name": "MARINA",
+      "target_shifts": 6,
+      "work_percentage": 50,
+      "mandatory_days": "25-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 27-12-2025; 05-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "7",
+      "name": "ROBER-",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "06-01-2026",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 27-12-2025; 05-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "8",
+      "name": "BEA",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "01-01-2026",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "9",
+      "name": "AGUEDA",
+      "target_shifts": 7,
+      "work_percentage": 66,
+      "mandatory_days": "25-12-2025",
+      "unavailable_days": "",
+      "work_periods": "23-12-2025 - 27-12-2025; 05-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "10",
+      "name": "ANGEL",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "06-01-2026",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "11",
+      "name": "MARIA",
+      "target_shifts": 5,
+      "work_percentage": 50,
+      "mandatory_days": "",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "12",
+      "name": "ELENA",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "06-01-2026",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 27-12-2025; 05-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "13",
+      "name": "RICARDO",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "02-01-2026; 05-01-2026",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [
+        "5",
+        "13",
+        "22",
+        "24",
+        "25"
+      ],
+      "monthly_targets": {}
+    },
+    {
+      "id": "14",
+      "name": "LUIS H",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "15",
+      "name": "SALVA",
+      "target_shifts": 9,
+      "work_percentage": 80,
+      "mandatory_days": "",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 03-01-2026; 12-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "16",
+      "name": "M.CARMEN",
+      "target_shifts": 7,
+      "work_percentage": 66,
+      "mandatory_days": "",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "17",
+      "name": "PABLO",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "25-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 27-12-2025; 05-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "18",
+      "name": "PAULA",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "31-12-2025; 05-01-2026",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "19",
+      "name": "MANUEL",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "22-12-2025; 27-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 27-12-2025; 05-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "20",
+      "name": "GONZALO",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "05-01-2026",
+      "unavailable_days": "",
+      "work_periods": "23-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "21",
+      "name": "CAROL",
+      "target_shifts": 9,
+      "work_percentage": 80,
+      "mandatory_days": "31-12-2025",
+      "unavailable_days": "",
+      "work_periods": "29-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "22",
+      "name": "SARA",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "31-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 03-01-2026; 12-01-2026 - 01-03-2026",
+      "incompatible_with": [
+        "5",
+        "14",
+        "24",
+        "25"
+      ],
+      "monthly_targets": {}
+    },
+    {
+      "id": "23",
+      "name": "MAR",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "05-01-2026",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "24",
+      "name": "CHEMA",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "31-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 01-03-2026",
+      "incompatible_with": [
+        "5",
+        "13",
+        "22",
+        "25"
+      ],
+      "monthly_targets": {}
+    },
+    {
+      "id": "25",
+      "name": "SANTI",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "24-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 01-03-2026",
+      "incompatible_with": [
+        "5",
+        "13",
+        "22",
+        "24"
+      ],
+      "monthly_targets": {}
+    },
+    {
+      "id": "26",
+      "name": "REQUE",
+      "target_shifts": 9,
+      "work_percentage": 66,
+      "mandatory_days": "24-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 27-12-2025; 05-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "27",
+      "name": "LAURA",
+      "target_shifts": 9,
+      "work_percentage": 80,
+      "mandatory_days": "24-12-2025",
+      "unavailable_days": "",
+      "work_periods": "23-12-2025 - 03-01-2026; 12-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "28",
+      "name": "DAVID",
+      "target_shifts": 11,
+      "work_percentage": 100,
+      "mandatory_days": "24-12-2025",
+      "unavailable_days": "",
+      "work_periods": "22-12-2025 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    },
+    {
+      "id": "29",
+      "name": "VALLE",
+      "target_shifts": 9,
+      "work_percentage": 100,
+      "mandatory_days": "",
+      "unavailable_days": "",
+      "work_periods": "14-01-2026 - 01-03-2026",
+      "incompatible_with": [],
+      "monthly_targets": {}
+    }
+  ],
+  "max_shifts_per_worker": 999,
+  "gap_between_shifts": 3,
+  "max_consecutive_weekends": 3,
+  "holidays": [
+    "2025-12-24",
+    "2025-12-25",
+    "2025-12-31",
+    "2026-01-01",
+    "2026-01-05",
+    "2026-01-06",
+    "2026-04-03",
+    "2026-04-06",
+    "2026-05-01",
+    "2026-08-15",
+    "2026-10-12",
+    "2026-11-01",
+    "2026-12-06",
+    "2026-12-08",
+    "2026-12-25"
+  ]
+}
