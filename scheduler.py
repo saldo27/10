@@ -243,11 +243,16 @@ class Scheduler:
             # Validate work percentage if present
             if 'work_percentage' in worker:
                 try:
-                    work_percentage = float(str(worker['work_percentage']).strip())
-                    if work_percentage <= 0 or work_percentage > 100:
+                    work_percentage = float(str(worker['work_percentage']).strip()) if worker['work_percentage'] else 100
+                    # Si es 0 o vacío, usar 100% por defecto
+                    if work_percentage == 0:
+                        worker['work_percentage'] = 100
+                        work_percentage = 100
+                    elif work_percentage < 0 or work_percentage > 100:
                         raise SchedulerError(f"Invalid work percentage for worker {worker['id']}: {work_percentage}")
-                except ValueError:
-                    raise SchedulerError(f"Invalid work percentage format for worker {worker['id']}")
+                except (ValueError, TypeError):
+                    # Si hay error de conversión, usar 100% por defecto
+                    worker['work_percentage'] = 100
 
             # Validate date formats in mandatory_days if present
             if 'mandatory_days' in worker:

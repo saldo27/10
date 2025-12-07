@@ -19,6 +19,8 @@ from progress_monitor import ProgressMonitor
 from iterative_optimizer import IterativeOptimizer
 from shift_tolerance_validator import ShiftToleranceValidator
 from adaptive_iterations import AdaptiveIterationManager
+from advanced_distribution_engine import AdvancedDistributionEngine
+from strict_balance_optimizer import StrictBalanceOptimizer
 
 
 class SchedulerCore:
@@ -52,14 +54,21 @@ class SchedulerCore:
         # Initialize adaptive iteration manager for intelligent optimization
         self.adaptive_manager = AdaptiveIterationManager(scheduler)
         
+        # Initialize advanced distribution engine
+        self.advanced_engine = None  # Will be initialized when schedule_builder is available
+        
+        # Initialize strict balance optimizer
+        self.balance_optimizer = None  # Will be initialized when schedule_builder is available
+        
         logging.info("SchedulerCore initialized with enhanced optimization systems and tolerance validation")
     
-    def orchestrate_schedule_generation(self, max_improvement_loops: int = 70) -> bool:
+    def orchestrate_schedule_generation(self, max_improvement_loops: int = 70, max_complete_attempts: int = 5) -> bool:
         """
-        Main orchestration method for schedule generation workflow.
+        Main orchestration method for schedule generation workflow with multiple complete attempts.
         
         Args:
-            max_improvement_loops: Maximum number of improvement iterations
+            max_improvement_loops: Maximum number of improvement iterations per attempt
+            max_complete_attempts: Maximum number of complete schedule attempts (default: 5)
             
         Returns:
             bool: True if schedule generation was successful
@@ -76,15 +85,103 @@ class SchedulerCore:
             if not self._assign_mandatory_phase():
                 raise SchedulerError("Failed to assign mandatory shifts")
             
-            # Phase 2.5: Multiple initial distribution attempts (NEW)
-            if not self._multiple_initial_distribution_attempts():
-                logging.warning("Multiple initial attempts phase completed with issues")
+            # Save mandatory state (preserved across all attempts)
+            mandatory_backup = copy.deepcopy(self.scheduler.schedule)
+            mandatory_assignments = copy.deepcopy(self.scheduler.worker_assignments)
+            mandatory_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
+            mandatory_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
+            mandatory_posts = copy.deepcopy(self.scheduler.worker_posts)
+            mandatory_locked = copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
             
-            # Phase 3: Iterative improvement
-            if not self._iterative_improvement_phase(max_improvement_loops):
-                logging.warning("Iterative improvement phase completed with issues")
+            # Phase 3: Multiple complete attempts
+            logging.info("=" * 80)
+            logging.info(f"🔄 STARTING {max_complete_attempts} COMPLETE SCHEDULE ATTEMPTS")
+            logging.info(f"   Each attempt will respect strict +10% tolerance limit")
+            logging.info("=" * 80)
             
-            # Phase 4: Finalization
+            complete_attempts = []
+            
+            for complete_attempt_num in range(1, max_complete_attempts + 1):
+                logging.info(f"\n{'█' * 80}")
+                logging.info(f"🎯 COMPLETE ATTEMPT {complete_attempt_num}/{max_complete_attempts}")
+                logging.info(f"{'█' * 80}")
+                
+                # Restore mandatory state for this attempt
+                self.scheduler.schedule = copy.deepcopy(mandatory_backup)
+                self.scheduler.worker_assignments = copy.deepcopy(mandatory_assignments)
+                self.scheduler.worker_shift_counts = copy.deepcopy(mandatory_counts)
+                self.scheduler.worker_weekend_counts = copy.deepcopy(mandatory_weekend_counts)
+                self.scheduler.worker_posts = copy.deepcopy(mandatory_posts)
+                self.scheduler.schedule_builder.schedule = self.scheduler.schedule
+                self.scheduler.schedule_builder.worker_assignments = self.scheduler.worker_assignments
+                self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
+                
+                # Phase 3.1: Multiple initial distribution attempts
+                if not self._multiple_initial_distribution_attempts():
+                    logging.warning(f"Complete attempt {complete_attempt_num} failed at initial distribution")
+                    continue
+                
+                # Phase 3.2: Iterative improvement
+                if not self._iterative_improvement_phase(max_improvement_loops):
+                    logging.warning(f"Complete attempt {complete_attempt_num} failed at iterative improvement")
+                    # Don't skip - save what we have
+                
+                # Calculate final metrics
+                coverage = self._calculate_coverage_percentage()
+                empty_shifts = self.metrics.count_empty_shifts()
+                score = self.metrics.calculate_overall_schedule_score()
+                workload_imbalance = self.metrics.calculate_workload_imbalance()
+                weekend_imbalance = self.metrics.calculate_weekend_imbalance()
+                
+                logging.info(f"\n📊 Complete Attempt {complete_attempt_num} Final Metrics:")
+                logging.info(f"   Coverage: {coverage:.2f}%")
+                logging.info(f"   Empty Shifts: {empty_shifts}")
+                logging.info(f"   Overall Score: {score:.2f}")
+                logging.info(f"   Workload Imbalance: {workload_imbalance:.2f}")
+                logging.info(f"   Weekend Imbalance: {weekend_imbalance:.2f}")
+                
+                # Save this complete attempt
+                complete_attempts.append({
+                    'attempt': complete_attempt_num,
+                    'coverage': coverage,
+                    'empty_shifts': empty_shifts,
+                    'score': score,
+                    'workload_imbalance': workload_imbalance,
+                    'weekend_imbalance': weekend_imbalance,
+                    'schedule': copy.deepcopy(self.scheduler.schedule),
+                    'assignments': copy.deepcopy(self.scheduler.worker_assignments),
+                    'counts': copy.deepcopy(self.scheduler.worker_shift_counts),
+                    'weekend_counts': copy.deepcopy(self.scheduler.worker_weekend_counts),
+                    'posts': copy.deepcopy(self.scheduler.worker_posts),
+                    'locked_mandatory': copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
+                })
+                
+                logging.info(f"✅ Complete attempt {complete_attempt_num} saved successfully")
+            
+            # Phase 4: Select best complete attempt
+            if not complete_attempts:
+                raise SchedulerError("All complete attempts failed!")
+            
+            best_attempt = self._select_best_complete_attempt(complete_attempts)
+            
+            # Apply the best complete attempt
+            logging.info(f"\n{'=' * 80}")
+            logging.info(f"🏆 SELECTING BEST COMPLETE ATTEMPT #{best_attempt['attempt']}")
+            logging.info(f"{'=' * 80}")
+            logging.info(f"   Coverage: {best_attempt['coverage']:.2f}%")
+            logging.info(f"   Empty Shifts: {best_attempt['empty_shifts']}")
+            logging.info(f"   Overall Score: {best_attempt['score']:.2f}")
+            logging.info(f"   Workload Imbalance: {best_attempt['workload_imbalance']:.2f}")
+            logging.info(f"   Weekend Imbalance: {best_attempt['weekend_imbalance']:.2f}")
+            
+            self.scheduler.schedule = best_attempt['schedule']
+            self.scheduler.worker_assignments = best_attempt['assignments']
+            self.scheduler.worker_shift_counts = best_attempt['counts']
+            self.scheduler.worker_weekend_counts = best_attempt['weekend_counts']
+            self.scheduler.worker_posts = best_attempt['posts']
+            self.scheduler.schedule_builder._locked_mandatory = best_attempt['locked_mandatory']
+            
+            # Phase 5: Finalization
             if not self._finalization_phase():
                 raise SchedulerError("Failed to finalize schedule")
             
@@ -197,14 +294,15 @@ class SchedulerCore:
             # Determine number of initial attempts based on complexity
             complexity_score = adaptive_config.get('complexity_score', 0)
             
+            # UPDATED: Reduced maximum attempts from 60 to 40 for better performance
             if complexity_score < 1000:
                 num_attempts = 10
             elif complexity_score < 5000:
                 num_attempts = 20
             elif complexity_score < 15000:
-                num_attempts = 40
+                num_attempts = 30
             else:
-                num_attempts = 60
+                num_attempts = 40  # Maximum reduced from 60 to 40
             
             logging.info(f"Problem complexity: {complexity_score:.0f}")
             logging.info(f"Number of initial distribution attempts: {num_attempts}")
@@ -386,6 +484,16 @@ class SchedulerCore:
         """
         logging.info("Phase 3: Starting enhanced iterative improvement...")
         
+        # Initialize advanced distribution engine if not already done
+        if self.advanced_engine is None and hasattr(self.scheduler, 'schedule_builder'):
+            self.advanced_engine = AdvancedDistributionEngine(self.scheduler, self.scheduler.schedule_builder)
+            logging.info("✅ Advanced Distribution Engine initialized")
+        
+        # Initialize strict balance optimizer if not already done
+        if self.balance_optimizer is None and hasattr(self.scheduler, 'schedule_builder'):
+            self.balance_optimizer = StrictBalanceOptimizer(self.scheduler, self.scheduler.schedule_builder)
+            logging.info("✅ Strict Balance Optimizer initialized")
+        
         # Initialize progress monitor
         self.progress_monitor = ProgressMonitor(self.scheduler, max_improvement_loops)
         self.progress_monitor.start_monitoring()
@@ -515,6 +623,53 @@ class SchedulerCore:
                 
                 if not overall_improvement_made:
                     logging.info("No se detectaron mejoras adicionales. Finalizando fase de mejora.")
+            
+            # Phase 3.5: Advanced distribution engine as final push
+            logging.info("\n" + "=" * 80)
+            logging.info("Phase 3.5: Advanced Distribution Engine - Final Push")
+            logging.info("=" * 80)
+            
+            if self.advanced_engine:
+                try:
+                    empty_before_advanced = self.metrics.count_empty_shifts()
+                    logging.info(f"Empty slots before advanced engine: {empty_before_advanced}")
+                    
+                    # Run advanced distribution engine
+                    self.advanced_engine.enhanced_fill_schedule(max_iterations=100)
+                    
+                    empty_after_advanced = self.metrics.count_empty_shifts()
+                    improvement = empty_before_advanced - empty_after_advanced
+                    
+                    logging.info(f"Empty slots after advanced engine: {empty_after_advanced}")
+                    logging.info(f"Improvement from advanced engine: +{improvement} slots filled")
+                    
+                except Exception as e:
+                    logging.error(f"Error during advanced distribution engine phase: {e}", exc_info=True)
+            else:
+                logging.warning("Advanced Distribution Engine not available")
+            
+            # Phase 3.6: Strict Balance Optimization
+            logging.info("\n" + "=" * 80)
+            logging.info("Phase 3.6: Strict Balance Optimization")
+            logging.info("=" * 80)
+            
+            if self.balance_optimizer:
+                try:
+                    # Aplicar optimización de balance estricto
+                    balance_achieved = self.balance_optimizer.optimize_balance(
+                        max_iterations=200,
+                        target_tolerance=1  # ±1 turno máximo
+                    )
+                    
+                    if balance_achieved:
+                        logging.info("✅ Perfect balance achieved: All workers within ±1 shift of target")
+                    else:
+                        logging.warning("⚠️ Some workers still outside ±1 tolerance")
+                    
+                except Exception as e:
+                    logging.error(f"Error during strict balance optimization: {e}", exc_info=True)
+            else:
+                logging.warning("Strict Balance Optimizer not available")
 
             # Final summary
             if improvement_loop_count >= max_improvement_loops:
@@ -1075,8 +1230,20 @@ class SchedulerCore:
             workers.sort(key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0))
             
         elif order_type == 'workload':
-            # Order by target shifts (higher target first)
-            workers.sort(key=lambda w: w.get('target_shifts', 0), reverse=True)
+            # Order by deficit percentage (higher deficit % first)
+            # This prioritizes part-time workers who are further from their targets
+            def get_deficit_percentage(worker):
+                worker_id = worker['id']
+                target = worker.get('target_shifts', 0)
+                current = self.scheduler.worker_shift_counts.get(worker_id, 0)
+                if target == 0:
+                    return 0
+                deficit = target - current
+                # Return deficit as percentage of target
+                # Negative deficit (over target) gets low priority
+                return (deficit / target) * 100
+            
+            workers.sort(key=get_deficit_percentage, reverse=True)
             
         elif order_type == 'alternating':
             # Alternate between low and high workload
@@ -1095,3 +1262,76 @@ class SchedulerCore:
             workers = alternated
         
         return workers
+    
+    def _calculate_coverage_percentage(self) -> float:
+        """
+        Calculate the percentage of shifts that are filled.
+        
+        Returns:
+            float: Coverage percentage (0-100)
+        """
+        total_shifts = 0
+        filled_shifts = 0
+        
+        for date, shifts in self.scheduler.schedule.items():
+            total_shifts += len(shifts)
+            filled_shifts += sum(1 for worker in shifts if worker is not None)
+        
+        if total_shifts == 0:
+            return 0.0
+        
+        return (filled_shifts / total_shifts) * 100.0
+    
+    def _select_best_complete_attempt(self, complete_attempts: List[Dict]) -> Dict:
+        """
+        Select the best complete attempt based on multiple criteria.
+        
+        Priority:
+        1. Highest coverage
+        2. If coverage equal, lowest workload imbalance
+        3. If still tied, lowest weekend imbalance
+        4. If still tied, highest overall score
+        
+        Args:
+            complete_attempts: List of complete attempt results
+            
+        Returns:
+            Dict: Best complete attempt data
+        """
+        logging.info(f"\n{'=' * 80}")
+        logging.info("📊 COMPARING ALL COMPLETE ATTEMPTS")
+        logging.info(f"{'=' * 80}")
+        
+        # Display comparison table
+        logging.info(f"\n{'Att':<5} {'Coverage':<12} {'Empty':<8} {'Score':<10} {'Work Imb':<12} {'Weekend Imb':<12}")
+        logging.info("─" * 70)
+        
+        for attempt in complete_attempts:
+            logging.info(
+                f"{attempt['attempt']:<5} "
+                f"{attempt['coverage']:>10.2f}%  "
+                f"{attempt['empty_shifts']:<8} "
+                f"{attempt['score']:<10.2f} "
+                f"{attempt['workload_imbalance']:<12.2f} "
+                f"{attempt['weekend_imbalance']:<12.2f}"
+            )
+        
+        # Sort by: coverage (desc), workload_imbalance (asc), weekend_imbalance (asc), score (desc)
+        sorted_attempts = sorted(
+            complete_attempts,
+            key=lambda x: (
+                -x['coverage'],              # Higher coverage is better (negative for desc)
+                x['workload_imbalance'],     # Lower imbalance is better
+                x['weekend_imbalance'],      # Lower imbalance is better
+                -x['score']                  # Higher score is better (negative for desc)
+            )
+        )
+        
+        best = sorted_attempts[0]
+        
+        logging.info(f"\n🏆 Best attempt: #{best['attempt']}")
+        logging.info(f"   Reason: Coverage={best['coverage']:.2f}%, "
+                    f"Workload Imb={best['workload_imbalance']:.2f}, "
+                    f"Weekend Imb={best['weekend_imbalance']:.2f}")
+        
+        return best

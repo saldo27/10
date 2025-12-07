@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass
 
 from shift_tolerance_validator import ShiftToleranceValidator
+from balance_validator import BalanceValidator
 from performance_cache import cached, time_function
 
 @dataclass
@@ -41,17 +42,23 @@ class IterativeOptimizer:
         """
         self.max_iterations = max_iterations
         self.tolerance = tolerance
-        self.convergence_threshold = 5  # Stop after 5 iterations without improvement (increased from 3)
+        self.convergence_threshold = 3  # Stop after 3 iterations without improvement
         self.stagnation_counter = 0
         self.best_result = None
         self.optimization_history = []
         self.weekend_only_mode = False  # Special mode when only weekend violations remain
+        self.no_change_counter = 0  # Track iterations with zero changes
+        self.max_no_change = 2  # Stop if no changes for 2 consecutive iterations
         
         # Constraint parameters - will be updated from scheduler config
         self.gap_between_shifts = 3  # Default minimum gap between shifts
         
+        # Initialize balance validator for strict balance checking
+        self.balance_validator = BalanceValidator(tolerance_percentage=tolerance * 100)
+        
         logging.info(f"IterativeOptimizer initialized: max_iterations={max_iterations}, tolerance={tolerance:.1%}")
         logging.info(f"Default gap_between_shifts={self.gap_between_shifts} (will be updated from config)")
+        logging.info(f"Balance validator initialized with {tolerance * 100}% tolerance")
     
     @time_function
     def optimize_schedule(self, scheduler_core, schedule: Dict, workers_data: List[Dict], 
@@ -69,12 +76,13 @@ class IterativeOptimizer:
             OptimizationResult with final optimization status
         """
         logging.info("🔄 Starting iterative schedule optimization...")
-        logging.info(f"Debug: Optimizer called with {len(schedule)} schedule entries and {len(workers_data)} workers")
-        
         # CRITICAL: Reset state for fresh optimization run
         self.stagnation_counter = 0
+        self.no_change_counter = 0
         self.best_result = None
         self.optimization_history = []
+        self.weekend_only_mode = False
+        logging.info("🔄 Optimizer state reset for new optimization run")
         self.weekend_only_mode = False
         logging.info("🔄 Optimizer state reset for new optimization run")
         
@@ -141,13 +149,13 @@ class IterativeOptimizer:
                     schedule=current_schedule,
                     validation_report=validation_report
                 )
-            
             # Track best result so far
             if total_violations < best_violations:
                 improvement_ratio = (best_violations - total_violations) / max(best_violations, 1)
                 best_violations = total_violations
                 best_schedule = copy.deepcopy(current_schedule)
                 self.stagnation_counter = 0  # Reset stagnation counter
+                self.no_change_counter = 0  # Reset no-change counter
                 
                 self.best_result = OptimizationResult(
                     success=False,
@@ -159,8 +167,19 @@ class IterativeOptimizer:
                     validation_report=validation_report
                 )
                 logging.info(f"   📈 New best result: {total_violations} violations (improvement: {improvement_ratio:.2%})")
+            elif total_violations == best_violations:
+                # No change at all - increment no-change counter
+                self.no_change_counter += 1
+                self.stagnation_counter += 1
+                logging.warning(f"   ⚠️  No change this iteration (no-change: {self.no_change_counter}/{self.max_no_change}, stagnation: {self.stagnation_counter}/{self.convergence_threshold})")
+                
+                if self.no_change_counter >= self.max_no_change:
+                    logging.warning(f"   🛑 Stopping: {self.no_change_counter} iterations with NO changes - system cannot improve further with current constraints")
+                    break
             else:
                 self.stagnation_counter += 1
+                self.no_change_counter = 0  # Worse but changed
+                logging.info(f"   📊 No improvement this iteration (stagnation: {self.stagnation_counter}/{self.convergence_threshold})")
                 logging.info(f"   📊 No improvement this iteration (stagnation: {self.stagnation_counter}/{self.convergence_threshold})")
                 
                 # Apply stagnation penalty for more aggressive optimization
@@ -272,6 +291,15 @@ class IterativeOptimizer:
         """
         logging.info(f"   🔧 Applying optimization strategies (intensity: {intensity:.2f})...")
         
+        # Check for extreme deviations that should never occur
+        general_violations = validation_report.get('general_shift_violations', [])
+        extreme_deviations = [v for v in general_violations if abs(v.get('deviation_percentage', 0)) > 15]
+        
+        if extreme_deviations:
+            logging.warning(f"   ⚠️ Found {len(extreme_deviations)} workers with EXTREME deviations (>15%):")
+            for v in extreme_deviations:
+                logging.warning(f"      Worker {v['worker']}: {v['deviation_percentage']:.1f}% deviation")
+        
         optimized_schedule = copy.deepcopy(schedule)
         
         # WEEKEND-ONLY MODE: Apply aggressive weekend-specific strategies
@@ -319,6 +347,26 @@ class IterativeOptimizer:
                 optimized_schedule = self._redistribute_general_shifts(
                     optimized_schedule, general_violations, workers_data, schedule_config
                 )
+        
+        # CRITICAL: Validate balance after redistribution
+        logging.info(f"   🔍 Validating balance after redistribution...")
+        balance_result = self.balance_validator.validate_schedule_balance(optimized_schedule, workers_data)
+        
+        if not balance_result['is_balanced']:
+            critical_count = len(balance_result['violations']['critical'])
+            extreme_count = len(balance_result['violations']['extreme'])
+            
+            if extreme_count > 0 or critical_count > 3:
+                logging.error(f"   🚨 Balance validation FAILED: {extreme_count} extreme, {critical_count} critical violations")
+                logging.error(f"   ⚠️  Max deviation: {balance_result['stats']['max_deviation']:.1f}%")
+                
+                # Get rebalancing recommendations
+                recommendations = self.balance_validator.get_rebalancing_recommendations(optimized_schedule, workers_data)
+                if recommendations:
+                    logging.info(f"   💡 Applying {len(recommendations[:3])} top rebalancing recommendations")
+                    # Apply will be done in next iteration
+        else:
+            logging.info(f"   ✅ Balance validation PASSED")
         
         # Strategy 2.5: Fill empty slots using greedy algorithm (NEW)
         empty_slots_count = self._count_empty_slots(optimized_schedule)
@@ -440,22 +488,23 @@ class IterativeOptimizer:
         for excess in have_excess_shifts:
             logging.info(f"      🔵 {excess['worker']} has {excess['excess']} excess shifts (deviation: {excess['deviation']:.1f}%)")
         
-        # Smart redistribution algorithm - ULTRA AGGRESSIVE for persistent violations
+        # BALANCED redistribution algorithm - focus on quality over quantity
         redistributions_made = 0
-        # ULTRA AGGRESSIVE redistribution limits
-        base_redistributions = len(violations) * 10  # Increased from 4 to 10
-        max_redistributions = min(200, base_redistributions)  # Increased from 50 to 200
+        successful_transfers = 0
+        failed_attempts = 0
         
-        # Extra aggressiveness for high violation counts
-        if len(violations) > 5:
-            max_redistributions = min(300, len(violations) * 12)  # Increased from 75 to 300
+        # Set reasonable redistribution limits based on violations
+        # CRITICAL: Match removals with assignments to maintain balance
+        max_redistributions = min(100, len(violations) * 5)
         
-        # CRITICAL: For very high violations (>20), go EXTREME
-        if len(violations) > 20:
-            max_redistributions = min(500, len(violations) * 15)
-            logging.warning(f"⚠️ EXTREME MODE: {len(violations)} violations detected, allowing up to {max_redistributions} redistributions")
+        # Track balance metrics
+        balance_tracker = {
+            'shifts_removed': {},  # Track removals by worker
+            'shifts_added': {}     # Track additions by worker
+        }
         
         logging.info(f"   📊 Max redistributions allowed: {max_redistributions}")
+        logging.info(f"   🎯 BALANCED MODE: Each removal must match with an assignment")
         
         for excess_info in have_excess_shifts:
             if redistributions_made >= max_redistributions:
@@ -527,6 +576,16 @@ class IterativeOptimizer:
                     # Check if worker can take this shift
                     if need_worker not in workers:
                         if self._can_worker_take_shift(need_worker, date_key, shift_type, optimized_schedule, workers_data):
+                            # CRITICAL: Validate that this transfer would improve balance
+                            transfer_valid, reason = self.balance_validator.check_transfer_validity(
+                                excess_worker, need_worker, optimized_schedule, workers_data
+                            )
+                            
+                            if not transfer_valid:
+                                candidates_blocked += 1
+                                logging.debug(f"         ❌ {need_worker} blocked by balance check: {reason}")
+                                continue
+                            
                             # Calculate priority for this assignment
                             assignment_priority = need_info['priority']
                             
@@ -545,34 +604,77 @@ class IterativeOptimizer:
                 
                 # Make the reassignment
                 if best_recipient:
-                    # Handle both list and dict formats for reassignment
-                    if isinstance(workers, list):
-                        # Find and replace in the list
-                        try:
-                            idx = workers.index(excess_worker)
-                            workers[idx] = best_recipient
-                        except ValueError:
-                            logging.warning(f"Worker {excess_worker} not found in list {workers}")
-                            continue
+                    # CRITICAL: Calculate balance impact before making change
+                    current_excess_deviation = excess_info['abs_deviation']
+                    current_need_deviation = next(
+                        (n['abs_deviation'] for n in need_more_shifts if n['worker'] == best_recipient),
+                        0
+                    )
+                    
+                    # Projected improvement: both workers move closer to target
+                    projected_improvement = current_excess_deviation + current_need_deviation
+                    
+                    # Only proceed if this improves overall balance
+                    if projected_improvement > 0.5:  # Minimum improvement threshold
+                        # Handle both list and dict formats for reassignment
+                        if isinstance(workers, list):
+                            # Find and replace in the list
+                            try:
+                                idx = workers.index(excess_worker)
+                                workers[idx] = best_recipient
+                            except ValueError:
+                                logging.warning(f"Worker {excess_worker} not found in list {workers}")
+                                continue
+                        else:
+                            # Dictionary format (original logic)
+                            workers.remove(excess_worker)
+                            workers.append(best_recipient)
+                        
+                        # Update tracking
+                        for need_info in need_more_shifts:
+                            if need_info['worker'] == best_recipient:
+                                need_info['shortage'] -= 1
+                                break
+                        
+                        # Update balance tracker
+                        balance_tracker['shifts_removed'][excess_worker] = balance_tracker['shifts_removed'].get(excess_worker, 0) + 1
+                        balance_tracker['shifts_added'][best_recipient] = balance_tracker['shifts_added'].get(best_recipient, 0) + 1
+                        
+                        shifts_removed += 1
+                        redistributions_made += 1
+                        successful_transfers += 1
+                        
+                        # Format date for display
+                        date_display = date_key.strftime('%Y-%m-%d') if isinstance(date_key, datetime) else str(date_key)
+                        logging.info(f"      🔄 Moved {shift_type} from {excess_worker} to {best_recipient} on {date_display} (improvement: {projected_improvement:.1f})")
                     else:
-                        # Dictionary format (original logic)
-                        workers.remove(excess_worker)
-                        workers.append(best_recipient)
-                    
-                    # Update tracking
-                    for need_info in need_more_shifts:
-                        if need_info['worker'] == best_recipient:
-                            need_info['shortage'] -= 1
-                            break
-                    
-                    shifts_removed += 1
-                    redistributions_made += 1
-                    
-                    # Format date for display
-                    date_display = date_key.strftime('%Y-%m-%d') if isinstance(date_key, datetime) else str(date_key)
-                    logging.info(f"      🔄 Moved {shift_type} from {excess_worker} to {best_recipient} on {date_display}")
+                        failed_attempts += 1
+                        logging.debug(f"      ⏭️ Skipped transfer - insufficient improvement ({projected_improvement:.1f})")
         
-        logging.info(f"   ✅ Made {redistributions_made} general shift redistributions")
+        # Report balance results
+        logging.info(f"   ✅ General shift redistribution complete:")
+        logging.info(f"      Successful transfers: {successful_transfers}")
+        logging.info(f"      Failed attempts: {failed_attempts}")
+        logging.info(f"      Total redistributions: {redistributions_made}")
+        
+        # Verify balance: removals should roughly equal additions
+        total_removed = sum(balance_tracker['shifts_removed'].values())
+        total_added = sum(balance_tracker['shifts_added'].values())
+        balance_check = total_removed == total_added
+        
+        if balance_check:
+            logging.info(f"      ✅ Balance verified: {total_removed} removed = {total_added} added")
+        else:
+            logging.warning(f"      ⚠️ Balance mismatch: {total_removed} removed ≠ {total_added} added")
+        
+        # Show top movers
+        if balance_tracker['shifts_removed']:
+            top_removed = sorted(balance_tracker['shifts_removed'].items(), key=lambda x: x[1], reverse=True)[:3]
+            logging.info(f"      Top reductions: {', '.join([f'{w}: -{c}' for w, c in top_removed])}")
+        if balance_tracker['shifts_added']:
+            top_added = sorted(balance_tracker['shifts_added'].items(), key=lambda x: x[1], reverse=True)[:3]
+            logging.info(f"      Top increases: {', '.join([f'{w}: +{c}' for w, c in top_added])}")
+        
         return optimized_schedule
     
     def _can_worker_take_shift(self, worker_name: str, date_key, shift_type: str, 

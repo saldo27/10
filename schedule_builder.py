@@ -640,7 +640,8 @@ class ScheduleBuilder:
             if self.constraint_checker._would_exceed_weekend_limit(worker_id, date):
                 return False
 
-            # Part-time workers need more days between shifts
+            # Part-time workers gap adjustment
+            # RESTORED: Workers <70% need larger gaps between shifts (gap+2 days)
             work_percentage = worker.get('work_percentage', 100)
             if work_percentage < 70:
                 part_time_gap = max(3, self.gap_between_shifts + 2)
@@ -848,10 +849,10 @@ class ScheduleBuilder:
         """Check gap constraint using simulated assignments."""
         # Use scheduler's gap config
         min_days_between = self.scheduler.gap_between_shifts + 1
-        # Add part-time adjustment if needed
+        # RESTORED: Part-time workers need gap+2
         worker_data = next((w for w in self.scheduler.workers_data if w['id'] == worker_id), None)
         work_percentage = worker_data.get('work_percentage', 100) if worker_data else 100
-        if work_percentage < 70: # Example threshold for part-time adjustment
+        if work_percentage < 70:
             min_days_between = max(min_days_between, self.scheduler.gap_between_shifts + 2)
 
         assignments = sorted(list(simulated_assignments.get(worker_id, [])))
@@ -1151,15 +1152,19 @@ class ScheduleBuilder:
         adjusted_target = int(overall_target_shifts * work_percentage / 100)
         
         # Calculate tolerance based on mode and relaxation level
-        # IMPORTANT: Target tolerance is ALWAYS +10% maximum (never increases)
-        # In relaxed mode, we work with ±10% tolerance for balance adjustments
+        # TWO-PHASE SYSTEM:
+        # - Phase 1 (strict): +10% limit - fill as much as possible
+        # - Phase 2 (emergency): +12% limit - only if coverage <95%
         if self.use_strict_mode:
-            # STRICT: Always +10% (upper limit only)
+            # PHASE 1: Strict +10% (upper limit only)
             tolerance = 0.10
         else:
-            # RELAXED: Still +10% maximum (never increases)
-            # The relaxation allows ±10% deviations in balance metrics
-            tolerance = 0.10
+            # PHASE 2: Emergency +12% for low coverage scenarios
+            # Only activated when coverage is insufficient
+            if relaxation_level >= 2:
+                tolerance = 0.12  # Emergency: allow +12% to complete coverage
+            else:
+                tolerance = 0.10  # Still strict at low relaxation
         
         tolerance_amount = adjusted_target * tolerance
         min_allowed = max(0, int(adjusted_target - tolerance_amount))
@@ -1168,42 +1173,48 @@ class ScheduleBuilder:
         # Count after potential assignment
         shifts_after_assignment = current_total_shifts + 1
         
+        # Log tolerance phase (only occasionally to avoid spam)
+        if worker_id == '1' and current_total_shifts == 0:
+            phase = "PHASE 1 (Strict +10%)" if tolerance == 0.10 else f"PHASE 2 (Emergency +{int(tolerance*100)}%)"
+            logging.info(f"🎯 Tolerance mode active: {phase}, relaxation_level={relaxation_level}")
+        
         # CRITICAL: Calculate deficit - how far below target
         deficit = adjusted_target - current_total_shifts
+        deficit_percentage = (deficit / adjusted_target * 100) if adjusted_target > 0 else 0
         
         # Give MASSIVE bonus to workers with significant deficit
-        if deficit >= 3:
-            # Workers 3+ shifts below target get HUGE priority
-            bonus = 15000 + (deficit * 3000)  # 3 below = 24000, 4 below = 27000, etc.
+        # BALANCED: Reduced extra bonuses for part-time workers to avoid over-prioritization
+        if deficit >= 5 or deficit_percentage >= 50:
+            # Workers 5+ shifts below target OR 50%+ below target get CRITICAL priority
+            bonus = 25000 + (deficit * 5000)
+            if work_percentage < 100 and deficit_percentage >= 50:
+                bonus += 3000  # Reduced from 10k to 3k
             logging.debug(f"Worker {worker_id}: CRITICAL DEFICIT bonus +{bonus} "
-                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit})")
+                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit}, {deficit_percentage:.1f}%)")
             return bonus
-        elif deficit >= 2:
-            # Workers 2 shifts below target get very high priority
-            bonus = 12000  # Aumentado de 8000
+        elif deficit >= 3 or deficit_percentage >= 30:
+            # Workers 3-4 shifts below target OR 30%+ below target get HUGE priority
+            bonus = 18000 + (deficit * 3000)
+            if work_percentage < 100 and deficit_percentage >= 30:
+                bonus += 2000  # Reduced from 5k to 2k
+            logging.debug(f"Worker {worker_id}: MAJOR DEFICIT bonus +{bonus} "
+                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit}, {deficit_percentage:.1f}%)")
+            return bonus
+        elif deficit >= 2 or deficit_percentage >= 20:
+            # Workers 2 shifts below target OR 20%+ below target get very high priority
+            bonus = 14000
+            if work_percentage < 100 and deficit_percentage >= 20:
+                bonus += 1000  # Reduced from 3k to 1k
             logging.debug(f"Worker {worker_id}: HIGH DEFICIT bonus +{bonus} "
-                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit})")
+                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit}, {deficit_percentage:.1f}%)")
             return bonus
         elif deficit >= 1:
             # Workers 1 shift below target get high priority
-            return 8000  # Aumentado de 5000
+            bonus = 10000
+            # Removed extra bonus for part-time workers at deficit=1
+            return bonus
         
-        # CRITICAL: Even more strict blocking for workers AT or ABOVE target
-        # If worker is at target or above, check if there are workers with deficit
-        if current_total_shifts >= adjusted_target:
-            # Check if this worker would exceed target + 1
-            if shifts_after_assignment > adjusted_target + 1:
-                # HARD BLOCK - no assignments beyond target+1 in strict mode
-                logging.debug(f"Worker {worker_id}: HARD BLOCKED - already at/above target "
-                            f"({current_total_shifts} >= {adjusted_target}), would be at {shifts_after_assignment}")
-                return float('-inf')
-            else:
-                # At exactly target+1, apply heavy penalty to discourage
-                penalty = 15000  # Muy alta para desalentar
-                logging.debug(f"Worker {worker_id}: HEAVY penalty for being at target+1 "
-                            f"(current: {current_total_shifts}, target: {adjusted_target})")
-                return -penalty
-        
+        # CRITICAL: First check tolerance limit (+10%) - this is the STRICT boundary
         # Block assignments that would violate upper tolerance
         if shifts_after_assignment > max_allowed:
             if self.use_strict_mode or relaxation_level < 2:
@@ -1214,18 +1225,13 @@ class ScheduleBuilder:
             else:
                 # At high relaxation, allow with severe penalty
                 excess = shifts_after_assignment - max_allowed
-                # EXTRA penalty for part-time workers
                 base_penalty = 5000
-                if work_percentage < 100:
-                    # Part-time workers get 2x-3x penalty multiplier
-                    multiplier = 2.0 + (100 - work_percentage) / 50.0  # 50% = 3x, 75% = 2.5x, 90% = 2.2x
-                    penalty = excess * base_penalty * multiplier
-                    logging.debug(f"Worker {worker_id}: EXTRA HEAVY penalty for part-time ({work_percentage}%) "
-                                f"exceeding tolerance (penalty: {penalty:.0f}, multiplier: {multiplier:.1f}x)")
-                else:
-                    penalty = excess * base_penalty
-                    logging.debug(f"Worker {worker_id}: Heavy penalty for exceeding tolerance at relaxation={relaxation_level} "
-                                f"(penalty: {penalty})")
+                # REMOVED: Extra penalty for part-time workers
+                # Part-time workers should NOT be penalized more than full-time
+                # Their lower targets already make them more sensitive to tolerance violations
+                penalty = excess * base_penalty
+                logging.debug(f"Worker {worker_id}: Heavy penalty for exceeding tolerance at relaxation={relaxation_level} "
+                            f"(penalty: {penalty})")
                 return -penalty
         
         # CRITICAL: Encourage workers BELOW target - HUGE bonus for large deficits
@@ -1241,16 +1247,11 @@ class ScheduleBuilder:
         else:
             # Above target but within tolerance
             excess = shifts_after_assignment - adjusted_target
-            # Enhanced penalty scale for part-time workers
-            if work_percentage < 100:
-                # Progressive penalty: stronger for part-time workers
-                penalty_multiplier = 1.5 + (100 - work_percentage) / 100.0  # 50% = 2x, 75% = 1.75x
-                penalty = excess * 100 * penalty_multiplier
-                logging.debug(f"Worker {worker_id} (part-time {work_percentage}%): Enhanced penalty for excess "
-                            f"({shifts_after_assignment} > {overall_target_shifts}, penalty: {penalty:.0f})")
-            else:
-                # Standard small penalty for full-time
-                penalty = excess * 100
+            # Standard penalty for all workers (no discrimination by work_percentage)
+            # Part-time workers already have proportionally lower targets
+            penalty = excess * 100
+            logging.debug(f"Worker {worker_id}: Small penalty for being above target "
+                        f"({shifts_after_assignment} > {adjusted_target}, penalty: {penalty:.0f})")
             return -penalty
     
     def _check_gap_constraints(self, worker, date, relaxation_level):
@@ -1351,6 +1352,7 @@ class ScheduleBuilder:
         Calculate score based on target shifts and mandatory assignments.
         
         CRITICAL: Never block workers with deficit. Always encourage filling targets.
+        ENHANCED: Stronger prioritization for workers below target.
         """
         worker_id = worker['id']
         current_shifts = len(self.worker_assignments[worker_id])
@@ -1374,24 +1376,25 @@ class ScheduleBuilder:
         # Check if we've already met or exceeded non-mandatory target
         shift_difference = non_mandatory_target - non_mandatory_assigned
         
-        # REMOVED: The restrictive check that was blocking assignments
-        # Old logic: if (non_mandatory_assigned + mandatory_shifts_remaining >= target_shifts and relaxation_level < 2):
-        #     return float('-inf')
-        # This was TOO restrictive and prevented workers from reaching their targets
-        
         # Calculate score based on shift difference
         score = 0
         if shift_difference <= 0:
-            # Worker has met non-mandatory target
+            # Worker has met or exceeded non-mandatory target
             if relaxation_level == 0:
-                score -= 5000 * abs(shift_difference)  # Reduced from 8000
+                score -= 6000 * abs(shift_difference)  # Increased penalty
             elif relaxation_level == 1:
-                score -= 3000 * abs(shift_difference)  # Reduced from 5000
+                score -= 4000 * abs(shift_difference)
             else:
-                score -= 1000 * abs(shift_difference)  # Reduced from 2000
+                score -= 2000 * abs(shift_difference)
         else:
-            # Prioritize workers who are furthest below target
-            score += shift_difference * 3000  # Increased from 2000 to 3000
+            # ENHANCED: Exponential bonus for workers below target
+            # Cuanto más lejos del target, mayor bonus
+            if shift_difference >= 5:
+                score += 20000 + (shift_difference * 5000)
+            elif shift_difference >= 3:
+                score += 12000 + (shift_difference * 4000)
+            else:
+                score += shift_difference * 4000  # Increased from 3000
             
         return score
 
@@ -2213,6 +2216,8 @@ class ScheduleBuilder:
         
         shifts_filled = 0
         made_change = False
+        no_progress_count = 0
+        max_no_progress = 3  # Stop after 3 attempts with no progress
         
         for attempt in range(max_attempts):
             # Get current empty shifts
@@ -2337,21 +2342,132 @@ class ScheduleBuilder:
             shifts_filled += filled_this_attempt
             
             if filled_this_attempt == 0:
+                no_progress_count += 1
+                logging.debug(f"Attempt {attempt + 1}: No fills ({no_progress_count}/{max_no_progress} attempts without progress)")
+                
+                if no_progress_count >= max_no_progress:
+                    logging.warning(f"⚠️  Stopping PHASE 1 after {no_progress_count} attempts without progress")
+                    logging.warning(f"   All workers blocked by +10% tolerance constraint")
+                    remaining_empty = sum(1 for d, shifts in self.schedule.items() 
+                                        for w in shifts if w is None)
+                    logging.info(f"   Phase 1 final state: {shifts_filled} shifts filled, {remaining_empty} remain empty")
+                    
+                    # Calculate coverage
+                    total_shifts = sum(len(shifts) for shifts in self.schedule.values())
+                    coverage = ((total_shifts - remaining_empty) / total_shifts * 100) if total_shifts > 0 else 0
+                    logging.info(f"   Phase 1 coverage: {coverage:.2f}%")
+                    
+                    # Check if Phase 2 (Emergency +12%) should be activated
+                    if coverage < 95.0 and self.use_strict_mode:
+                        logging.info(f"")
+                        logging.info(f"{'=' * 80}")
+                        logging.info(f"🚨 ACTIVATING PHASE 2: EMERGENCY FILL (+12% tolerance)")
+                        logging.info(f"   Current coverage: {coverage:.2f}% < 95%")
+                        logging.info(f"   Switching from +10% to +12% tolerance to complete schedule")
+                        logging.info(f"{'=' * 80}")
+                        
+                        # Disable strict mode temporarily to allow +12%
+                        self.use_strict_mode = False
+                        phase2_relaxation = 2  # This will activate +12% tolerance
+                        
+                        # Try additional fill attempts with relaxed tolerance
+                        phase2_filled = 0
+                        phase2_attempts = min(8, max_attempts - attempt)  # Up to 8 more attempts
+                        
+                        for phase2_attempt in range(phase2_attempts):
+                            phase2_empty = []
+                            for date_val, workers_in_posts in self.schedule.items():
+                                for post_index, worker_in_post in enumerate(workers_in_posts):
+                                    if worker_in_post is None:
+                                        phase2_empty.append((date_val, post_index))
+                            
+                            if not phase2_empty:
+                                logging.info(f"✅ Phase 2: All shifts filled after {phase2_attempt + 1} attempts")
+                                break
+                            
+                            phase2_empty.sort(key=lambda x: (x[0], x[1]))
+                            filled_phase2 = 0
+                            
+                            for date_val, post_val in phase2_empty:
+                                # Skip if protected mandatory
+                                if self.schedule[date_val][post_val] is not None:
+                                    existing = self.schedule[date_val][post_val]
+                                    if (existing, date_val) in self._locked_mandatory or self._is_mandatory(existing, date_val):
+                                        continue
+                                
+                                for worker_data in workers_list:
+                                    worker_id = worker_data['id']
+                                    
+                                    # Use PHASE 2 relaxation level
+                                    score = self._calculate_worker_score(worker_data, date_val, post_val, relaxation_level=phase2_relaxation)
+                                    
+                                    if score > float('-inf'):
+                                        others_now = [w for i, w in enumerate(self.schedule.get(date_val, [])) 
+                                                     if i != post_val and w is not None]
+                                        
+                                        if not self._check_incompatibility_with_list(worker_id, others_now):
+                                            continue
+                                        
+                                        if not self._can_assign_worker(worker_id, date_val, post_val):
+                                            continue
+                                        
+                                        # CRITICAL: Verify +12% tolerance limit in Phase 2
+                                        # Cannot rely on _calculate_worker_score blocking alone
+                                        worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
+                                        if worker_config:
+                                            current_shifts = len(self.worker_assignments.get(worker_id, set()))
+                                            target = worker_config.get('target_shifts', 0)
+                                            work_pct = worker_config.get('work_percentage', 100)
+                                            adjusted_target = int(target * work_pct / 100)
+                                            max_allowed_phase2 = int(adjusted_target * 1.12 + 0.5)  # +12% limit
+                                            
+                                            if current_shifts >= max_allowed_phase2:
+                                                # Worker already at +12% limit
+                                                continue
+                                        
+                                        # Assign worker
+                                        self.schedule[date_val][post_val] = worker_id
+                                        self.worker_assignments[worker_id].add(date_val)
+                                        filled_phase2 += 1
+                                        phase2_filled += 1
+                                        break
+                            
+                            logging.info(f"Phase 2 attempt {phase2_attempt + 1}: Filled {filled_phase2} shifts")
+                            
+                            if filled_phase2 == 0:
+                                logging.info(f"Phase 2: No more progress possible")
+                                break
+                        
+                        # Re-enable strict mode
+                        self.use_strict_mode = True
+                        
+                        # Calculate final coverage
+                        final_empty = sum(1 for d, shifts in self.schedule.items() 
+                                        for w in shifts if w is None)
+                        final_coverage = ((total_shifts - final_empty) / total_shifts * 100) if total_shifts > 0 else 0
+                        
+                        logging.info(f"")
+                        logging.info(f"🎯 PHASE 2 RESULTS:")
+                        logging.info(f"   Additional shifts filled: {phase2_filled}")
+                        logging.info(f"   Final coverage: {final_coverage:.2f}%")
+                        logging.info(f"   Empty shifts remaining: {final_empty}")
+                        logging.info(f"{'=' * 80}")
+                    
+                    break
+                
                 # No progress in this attempt, try with relaxation
                 if attempt < max_attempts - 1:
-                    logging.debug(f"Attempt {attempt + 1}: No fills, will try with relaxation")
-                else:
-                    logging.debug(f"Attempt {attempt + 1}: No fills possible")
-                    break
+                    logging.debug(f"   Will try with relaxation")
             else:
+                # Made progress, reset counter
+                no_progress_count = 0
                 logging.debug(f"Attempt {attempt + 1}: Filled {filled_this_attempt} shifts")
         
         if made_change:
             self._synchronize_tracking_data()
-            logging.info(f"Custom worker order fill: {shifts_filled} shifts filled")
+            logging.info(f"Custom worker order fill completed")
         
         return made_change
-        return made_change_overall
 
     def _find_swap_candidate(self, worker_W_id, conflict_date, conflict_post):
         """
