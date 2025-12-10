@@ -620,15 +620,10 @@ class ScheduleBuilder:
                         return False
                 
                     # Check for 7-14 day pattern (same weekday in consecutive weeks)
-                    # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
-                    # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
+                    # CRITICAL: This constraint applies to ALL days (including weekends)
+                    # Workers should NOT have the same weekday in consecutive weeks (7 or 14 days apart)
                     if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                        # Allow weekend days to be assigned on same weekday 7/14 days apart
-                        if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
-                            continue  # Skip this constraint for weekend days
-                        
-                        # STRICT: NO overrides for 7/14 pattern - this is a hard constraint
-                        # Workers should not have the same weekday in consecutive weeks
+                        # STRICT: NO overrides for 7/14 pattern - this is a HARD constraint for ALL days
                         logging.debug(f"Worker {worker_id} 7/14 pattern violation: {date.strftime('%Y-%m-%d')} and {prev_date.strftime('%Y-%m-%d')} are both {date.strftime('%A')}")
                         return False
             
@@ -804,12 +799,8 @@ class ScheduleBuilder:
                     continue
                 days_between = abs((date - prev_date).days)
                 # Check for exactly 7 or 14 days pattern AND same weekday
-                # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
-                # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
+                # CRITICAL: This constraint applies to ALL days (including weekends)
                 if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                    # Allow weekend days to be assigned on same weekday 7/14 days apart
-                    if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
-                        continue  # Skip this constraint for weekend days
                     logging.debug(f"Sim Check Fail: {days_between} day pattern conflict for {worker_id} between {prev_date} and {date}")
                     return False
                 
@@ -872,13 +863,9 @@ class ScheduleBuilder:
                     if ((prev_date.weekday() == 4 and date.weekday() == 0) or \
                         (date.weekday() == 4 and prev_date.weekday() == 0)):
                         return False
-            # Add check for weekly pattern (7/14 day) - weekdays only
-            # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
-            # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
+            # Add check for weekly pattern (7/14 day) - ALL days
+            # CRITICAL: This constraint applies to ALL days (including weekends)
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                # Allow weekend days to be assigned on same weekday 7/14 days apart
-                if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
-                    continue  # Skip this constraint for weekend days
                 return False
         return True
     
@@ -1339,41 +1326,9 @@ class ScheduleBuilder:
                         return False
             
             # CRITICAL: 7/14 day pattern check (same weekday constraint)
-            # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
-            # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
+            # This constraint applies to ALL days (including weekends) - NO exceptions
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                # Allow weekend days to be assigned on same weekday 7/14 days apart
-                if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
-                    continue  # Skip this constraint for weekend days
-                
-                # STRICT MODE: Allow violations if worker has significant deficit
-                # During initial distribution, 7/14 pattern should NOT be absolute
-                # because it blocks too many assignments (e.g., Worker on Thu 1 can't work Thu 8, 15, 22)
-                if self.use_strict_mode:
-                    # Calculate relative deficit percentage
-                    deficit_pct = (target_deficit / max(target_shifts, 1)) * 100 if target_shifts > 0 else 0
-                    
-                    # Allow 7/14 violation if:
-                    # 1. Worker needs at least 2 more shifts (absolute threshold)
-                    # OR 2. Worker has deficit >40% of their target (relative threshold)
-                    # This handles both low-target workers (2-5 shifts) and high-target workers (50+ shifts)
-                    if target_deficit >= 2 or deficit_pct > 40:
-                        logging.debug(f"STRICT: Worker {worker_id} allowed 7/14 pattern override - needs {target_deficit} more shifts ({deficit_pct:.1f}% of target)")
-                        continue
-                    else:
-                        logging.debug(f"STRICT: Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')} - deficit {target_deficit} < 2 and {deficit_pct:.1f}% < 40%")
-                        return False
-                
-                # RELAXED MODE: Allow violation if worker has significant deficit
-                # Work with ±10% tolerance concept: allow if it helps balance
-                deficit_percentage = (target_deficit / max(target_shifts, 1)) * 100 if target_shifts > 0 else 0
-                
-                # Allow 7/14 violation if deficit is significant (>10% of target)
-                if relaxation_level >= 1 and deficit_percentage >= 10:
-                    logging.warning(f"⚠️ RELAXED: Worker {worker_id} 7/14 pattern override - deficit {target_deficit} ({deficit_percentage:.1f}% of target)")
-                    continue
-                    
-                logging.debug(f"Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}")
+                logging.debug(f"Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')} - same weekday as {prev_date.strftime('%Y-%m-%d')} ({days_between} days apart)")
                 return False
         
         return True
