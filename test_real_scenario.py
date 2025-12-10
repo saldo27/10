@@ -25,7 +25,7 @@ logging.basicConfig(
 
 def main():
     logging.info("="*80)
-    logging.info("TEST ESCENARIO REAL - 8 MESES")
+    logging.info("TEST ESCENARIO REAL - 4 MESES")
     logging.info("="*80)
     logging.info("")
     logging.info("Parámetros del test:")

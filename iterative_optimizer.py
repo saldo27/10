@@ -32,13 +32,19 @@ class IterativeOptimizer:
     until tolerance requirements are met.
     """
     
-    def __init__(self, max_iterations: int = 50, tolerance: float = 0.10):
+    def __init__(self, max_iterations: int = 50, tolerance: float = 0.12):
         """
         Initialize the iterative optimizer with enhanced redistribution algorithms.
         
+        TOLERANCE SYSTEM:
+        - This optimizer works with the ACTIVE tolerance phase from schedule_builder
+        - Phase 1 (Initial): ±8% strict target
+        - Phase 2 (Emergency): ±12% absolute maximum (NEVER exceeded)
+        - Default tolerance=0.12 represents the absolute maximum boundary
+        
         Args:
             max_iterations: Maximum number of optimization iterations (default: 50, increased from 30)
-            tolerance: Tolerance percentage (0.10 = 10%)
+            tolerance: Maximum tolerance percentage (0.12 = 12% absolute limit)
         """
         self.max_iterations = max_iterations
         self.tolerance = tolerance
@@ -815,6 +821,37 @@ class IterativeOptimizer:
                     logging.debug(f"⚠️ {worker_name} super flexible gap: {days_between} days (below normal {gap_between_shifts} but allowed for redistribution)")
                     # Continue - allow this assignment
             
+            # CRITICAL: Check tolerance limit (±12% absolute maximum during optimization)
+            # This prevents swaps from violating tolerance limits
+            
+            # Count ACTUAL shifts (not just dates) - a worker can have multiple shifts per date
+            current_shifts = 0
+            for date, assignments in schedule.items():
+                if isinstance(assignments, dict):
+                    for shift, workers in assignments.items():
+                        if worker_name in workers:
+                            current_shifts += 1
+                elif isinstance(assignments, list):
+                    current_shifts += assignments.count(worker_name)
+            
+            target_shifts = worker_data.get('target_shifts', 0)
+            work_percentage = worker_data.get('work_percentage', 100) / 100.0
+            
+            if target_shifts > 0:
+                # Use Phase 2 tolerance (12%) during optimization
+                # Part-time workers get adjusted tolerance (minimum 5%)
+                base_tolerance = 0.12  # ±12% absolute maximum
+                adjusted_tolerance = max(base_tolerance * work_percentage, 0.05)
+                
+                max_shifts = round(target_shifts * (1 + adjusted_tolerance))
+                
+                # Check if adding this shift would exceed the limit
+                if current_shifts + 1 > max_shifts:
+                    logging.debug(f"❌ {worker_name} blocked: Tolerance violation - "
+                                f"would have {current_shifts + 1}/{target_shifts} shifts "
+                                f"(max: {max_shifts}, tolerance: {adjusted_tolerance*100:.1f}%)")
+                    return False
+            
             # Check consecutive shift limits (basic check)
             # This is a simplified version - full implementation would check actual constraints
             return True
@@ -1369,6 +1406,14 @@ class IterativeOptimizer:
                 new_worker = random.choice(worker_names)
                 
                 if new_worker not in current_workers:
+                    # CRITICAL: Validate that swap doesn't violate tolerance BEFORE making it
+                    # Check if new_worker can take this shift (includes tolerance validation)
+                    if not self._can_worker_take_shift(
+                        new_worker, random_date, random_shift, optimized_schedule, workers_data
+                    ):
+                        logging.debug(f"   ❌ Random swap blocked: {new_worker} cannot take shift on {random_date} (tolerance/constraint violation)")
+                        continue
+                    
                     # Handle different assignment formats
                     if isinstance(assignments, dict):
                         # Dictionary format: modify the specific shift list
@@ -1871,6 +1916,8 @@ class IterativeOptimizer:
         """
         Check if worker can take a shift with basic constraint checking.
         Simplified version for greedy algorithm (less strict than full validation).
+        
+        CRITICAL: This function MUST validate tolerance to prevent violations during optimization.
         """
         try:
             # Check if worker already has a shift on this date
@@ -1881,6 +1928,50 @@ class IterativeOptimizer:
                 for shift_workers in schedule[date].values():
                     if isinstance(shift_workers, list) and worker_name in shift_workers:
                         return False
+            
+            # CRITICAL: Check tolerance limit (±12% absolute maximum during optimization)
+            # This prevents optimization from violating tolerance limits
+            if hasattr(scheduler_core, 'builder') and scheduler_core.builder:
+                builder = scheduler_core.builder
+                
+                # Find worker in workers_data to get target_shifts
+                worker_data = None
+                for w in workers_data:
+                    w_id = w.get('id')
+                    w_name = f"Worker {w_id}" if isinstance(w_id, (int, str)) and str(w_id).isdigit() else str(w_id)
+                    if w_name == worker_name:
+                        worker_data = w
+                        break
+                
+                if worker_data:
+                    # Count current shifts for this worker
+                    # CRITICAL: Count ALL shifts, not just dates - worker can have multiple shifts per date
+                    current_shifts = 0
+                    for d, assigns in schedule.items():
+                        if isinstance(assigns, list):
+                            current_shifts += assigns.count(worker_name)
+                        elif isinstance(assigns, dict):
+                            for shift_workers in assigns.values():
+                                if isinstance(shift_workers, list):
+                                    current_shifts += shift_workers.count(worker_name)
+                    
+                    # Use Phase 2 tolerance (12%) during optimization
+                    # Part-time workers get adjusted tolerance (minimum 5%)
+                    target_shifts = worker_data.get('target_shifts', 0)
+                    work_percentage = worker_data.get('work_percentage', 100) / 100.0
+                    
+                    if target_shifts > 0:
+                        base_tolerance = 0.12  # Phase 2: ±12% absolute maximum
+                        adjusted_tolerance = max(base_tolerance * work_percentage, 0.05)
+                        
+                        max_shifts = round(target_shifts * (1 + adjusted_tolerance))
+                        
+                        # Check if adding this shift would exceed the limit
+                        if current_shifts + 1 > max_shifts:
+                            logging.debug(f"   ❌ Tolerance violation prevented: {worker_name} "
+                                        f"would have {current_shifts + 1}/{target_shifts} shifts "
+                                        f"(max: {max_shifts}, tolerance: {adjusted_tolerance*100:.1f}%)")
+                            return False
             
             # Check basic gap constraint (simplified - just check adjacent days)
             if hasattr(scheduler_core, 'scheduler') and hasattr(scheduler_core.scheduler, 'gap_between_shifts'):

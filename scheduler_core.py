@@ -49,7 +49,9 @@ class SchedulerCore:
         
         # Initialize tolerance validation and iterative optimization
         self.tolerance_validator = ShiftToleranceValidator(scheduler)
-        self.iterative_optimizer = IterativeOptimizer(max_iterations=50, tolerance=0.10)  # Increased tolerance to 10%
+        # Iterative optimizer works with Phase 2 tolerance (±12% absolute limit)
+        # Note: Initial distribution uses Phase 1 (±10% objective), optimizer handles both phases
+        self.iterative_optimizer = IterativeOptimizer(max_iterations=50, tolerance=0.12)
         
         # Initialize adaptive iteration manager for intelligent optimization
         self.adaptive_manager = AdaptiveIterationManager(scheduler)
@@ -96,7 +98,8 @@ class SchedulerCore:
             # Phase 3: Multiple complete attempts
             logging.info("=" * 80)
             logging.info(f"🔄 STARTING {max_complete_attempts} COMPLETE SCHEDULE ATTEMPTS")
-            logging.info(f"   Each attempt will respect strict +10% tolerance limit")
+            logging.info(f"   Each attempt will respect Phase 1 (±10% OBJECTIVE) tolerance initially")
+            logging.info(f"   Phase 2 (±12% ABSOLUTE LIMIT) activates if coverage < 95%")
             logging.info("=" * 80)
             
             complete_attempts = []
@@ -281,7 +284,8 @@ class SchedulerCore:
             # CRITICAL: Enable STRICT MODE for initial distribution
             self.scheduler.schedule_builder.enable_strict_mode()
             logging.info("🔒 STRICT MODE activated for initial distribution phase")
-            logging.info("   - Target limit: +10% (adjusted by work_percentage)")
+            logging.info("   - Phase 1 target: ±10% objective (adjusted by work_percentage)")
+            logging.info("   - Phase 2 emergency: ±12% ABSOLUTE LIMIT (if needed)")
             logging.info("   - Gap reduction: NOT allowed")
             logging.info("   - Pattern 7/14: Allowed if worker needs 3+ more shifts (prevents blocking)")
             logging.info("   - Mandatory shifts: NEVER modified")
@@ -855,7 +859,7 @@ class SchedulerCore:
             # Log final summary
             self.scheduler.log_schedule_summary("Final Generated Schedule")
             
-            # Apply iterative tolerance optimization to meet ±8% requirements
+            # Apply iterative tolerance optimization to meet ±10% objective requirements
             logging.info("=" * 80)
             logging.info("APPLYING ITERATIVE TOLERANCE OPTIMIZATION")
             logging.info("=" * 80)
@@ -869,7 +873,7 @@ class SchedulerCore:
     
     def _apply_tolerance_optimization(self):
         """
-        Apply iterative optimization to meet ±8% tolerance requirements.
+        Apply iterative optimization to meet ±10% objective tolerance requirements.
         
         This method uses the IterativeOptimizer to automatically correct tolerance violations
         by redistributing shifts between workers who are over/under their target allocations.
@@ -886,12 +890,12 @@ class SchedulerCore:
             total_violations = len(outside_general) + len(outside_weekend)
             
             logging.info(f"Initial tolerance check:")
-            logging.info(f"  Workers outside ±8% tolerance (general): {len(outside_general)}")
-            logging.info(f"  Workers outside ±8% tolerance (weekend): {len(outside_weekend)}")
+            logging.info(f"  Workers outside ±10% objective (general): {len(outside_general)}")
+            logging.info(f"  Workers outside ±10% objective (weekend): {len(outside_weekend)}")
             logging.info(f"  Total violations: {total_violations}")
             
             if total_violations == 0:
-                logging.info("✅ All workers already within ±8% tolerance!")
+                logging.info("✅ All workers already within ±10% objective!")
                 return
             
             # Log violations details
@@ -912,7 +916,8 @@ class SchedulerCore:
             # CRITICAL: Switch to RELAXED MODE for iterative optimization
             self.scheduler.schedule_builder.enable_relaxed_mode()
             logging.info("🔓 RELAXED MODE activated for iterative optimization phase")
-            logging.info("   - Target tolerance: +10% (NEVER increases)")
+            logging.info("   - Target tolerance: ±10% objective (Phase 1) or ±12% limit (Phase 2 if needed)")
+            logging.info("   - ABSOLUTE LIMIT: ±12% NEVER exceeded")
             logging.info("   - Gap reduction: -1 ONLY (with deficit ≥3)")
             logging.info("   - Pattern 7/14: Allows violation if deficit >10% of target")
             logging.info("   - Balance tolerance: ±10% for guardias/mes, weekends")
@@ -991,7 +996,7 @@ class SchedulerCore:
             logging.info(f"  Weekend: {len(final_outside_weekend)}")
             
             if final_total == 0:
-                logging.info("🎯 SUCCESS: All workers within ±8% tolerance!")
+                logging.info("🎯 SUCCESS: All workers within ±10% objective!")
             else:
                 logging.warning(f"⚠️  {final_total} workers still outside tolerance")
             logging.info("=" * 80)
@@ -1207,47 +1212,66 @@ class SchedulerCore:
         """
         Get workers list ordered according to specified type.
         
+        CRITICAL CHANGE: ALWAYS prioritizes workers with fewer assigned shifts first,
+        then applies secondary ordering strategy. This ensures fair distribution.
+        
         Args:
             order_type: Type of ordering ('balanced', 'random', 'sequential', 'reverse', 
                        'workload', 'alternating')
             
         Returns:
-            List of worker dictionaries in specified order
+            List of worker dictionaries in specified order, with workers having
+            fewer shifts always getting priority
         """
         workers = list(self.workers_data)
         
+        # PRIMARY SORT: Always by current assignment count (fewer shifts first)
+        # This ensures workers with 0 shifts get priority over workers with 3+ shifts
+        workers.sort(key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0))
+        
+        # SECONDARY SORT: Apply strategy-specific ordering within groups of same shift count
         if order_type == 'random':
-            random.shuffle(workers)
+            # Group by shift count, then randomize within each group
+            from itertools import groupby
+            result = []
+            for shift_count, group in groupby(workers, key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0)):
+                group_list = list(group)
+                random.shuffle(group_list)
+                result.extend(group_list)
+            workers = result
             
         elif order_type == 'sequential':
-            workers.sort(key=lambda w: w['id'])
+            # Secondary sort by ID, but keeping shift count priority
+            workers.sort(key=lambda w: (self.scheduler.worker_shift_counts.get(w['id'], 0), w['id']))
             
         elif order_type == 'reverse':
-            workers.sort(key=lambda w: w['id'], reverse=True)
+            # Secondary sort by ID reversed, but keeping shift count priority
+            workers.sort(key=lambda w: (self.scheduler.worker_shift_counts.get(w['id'], 0), -w['id']))
             
         elif order_type == 'balanced':
-            # Order by current assignment count (fewer first)
-            workers.sort(key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0))
+            # Already sorted by shift count, keep as is
+            pass
             
         elif order_type == 'workload':
-            # Order by deficit percentage (higher deficit % first)
-            # This prioritizes part-time workers who are further from their targets
-            def get_deficit_percentage(worker):
+            # Order by deficit percentage, but still prioritize by absolute shift count first
+            def get_sort_key(worker):
                 worker_id = worker['id']
-                target = worker.get('target_shifts', 0)
                 current = self.scheduler.worker_shift_counts.get(worker_id, 0)
+                target = worker.get('target_shifts', 0)
                 if target == 0:
-                    return 0
-                deficit = target - current
-                # Return deficit as percentage of target
-                # Negative deficit (over target) gets low priority
-                return (deficit / target) * 100
+                    deficit_pct = 0
+                else:
+                    deficit = target - current
+                    deficit_pct = (deficit / target) * 100
+                # Return tuple: (current_shifts, -deficit_percentage)
+                # Lower current shifts come first, then higher deficit % within same shift count
+                return (current, -deficit_pct)
             
-            workers.sort(key=get_deficit_percentage, reverse=True)
+            workers.sort(key=get_sort_key)
             
         elif order_type == 'alternating':
-            # Alternate between low and high workload
-            workers.sort(key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0))
+            # Already sorted by shift count
+            # Alternate between lowest and highest within each shift count group
             alternated = []
             low_idx = 0
             high_idx = len(workers) - 1
@@ -1260,6 +1284,12 @@ class SchedulerCore:
                 low_idx += 1
                 high_idx -= 1
             workers = alternated
+        
+        # Log first few workers to verify ordering
+        if len(workers) > 0:
+            first_5 = [(w['id'], self.scheduler.worker_shift_counts.get(w['id'], 0)) 
+                      for w in workers[:5]]
+            logging.debug(f"Worker order ({order_type}), first 5: {first_5}")
         
         return workers
     

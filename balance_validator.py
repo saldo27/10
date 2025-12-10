@@ -5,10 +5,13 @@ Balance Validator - Validación estricta de balance de turnos
 Sistema que garantiza que las desviaciones de turnos se mantengan dentro de límites
 estrictamente controlados durante todo el proceso de optimización.
 
-Límites de desviación:
-- Objetivo: ±8% (tolerancia configurada)
-- Máximo permitido: ±10% (límite de emergencia)
-- Crítico: >15% (requiere intervención inmediata)
+SISTEMA DE TOLERANCIA POR FASES:
+- Fase 1 (Initial): ±8% tolerancia objetivo estricta
+- Fase 2 (Emergency): ±12% LÍMITE ABSOLUTO (solo si cobertura < 95%)
+- Crítico: >12% NUNCA debe ocurrir (sistema debe bloquear)
+
+IMPORTANTE: Este validador clasifica violaciones. El enforcement activo
+está en schedule_builder._would_violate_tolerance()
 """
 
 import logging
@@ -17,23 +20,23 @@ from datetime import datetime
 
 
 class BalanceValidator:
-    """Validador estricto de balance de turnos"""
+    """Validador estricto de balance de turnos con sistema de fases"""
     
     def __init__(self, tolerance_percentage: float = 8.0):
         """
         Initialize balance validator
         
         Args:
-            tolerance_percentage: Tolerancia objetivo en porcentaje (default: 8%)
+            tolerance_percentage: Tolerancia objetivo en porcentaje (default: 8% para Fase 1)
         """
         self.tolerance_percentage = tolerance_percentage
-        self.emergency_limit = 10.0  # Límite de emergencia: 25% por encima de tolerancia
-        self.critical_threshold = 15.0  # Umbral crítico
+        self.emergency_limit = 12.0  # Fase 2: LÍMITE ABSOLUTO ±12%
+        self.critical_threshold = 12.0  # Cualquier cosa >12% es un error del sistema
         
-        logging.info(f"BalanceValidator initialized:")
-        logging.info(f"  Target tolerance: ±{tolerance_percentage}%")
-        logging.info(f"  Emergency limit: ±{self.emergency_limit}%")
-        logging.info(f"  Critical threshold: >{self.critical_threshold}%")
+        logging.info(f"BalanceValidator initialized with phase system:")
+        logging.info(f"  Phase 1 target: ±{tolerance_percentage}%")
+        logging.info(f"  Phase 2 ABSOLUTE LIMIT: ±{self.emergency_limit}%")
+        logging.info(f"  Critical threshold: >{self.critical_threshold}% (SHOULD NEVER OCCUR)")
     
     def validate_schedule_balance(self, schedule: Dict, workers_data: List[Dict]) -> Dict:
         """
@@ -47,10 +50,10 @@ class BalanceValidator:
             Dict con estadísticas de balance y violaciones
         """
         violations = {
-            'within_tolerance': [],     # Dentro de ±8%
-            'within_emergency': [],     # Entre 8% y 10%
-            'critical': [],             # >10%
-            'extreme': []               # >15%
+            'within_tolerance': [],     # Fase 1: Dentro de ±8%
+            'within_emergency': [],     # Fase 2: Entre 8% y 12% (límite absoluto)
+            'critical': [],             # >12% (NO debería ocurrir - error del sistema)
+            'extreme': []               # >12% (deprecated, same as critical now)
         }
         
         stats = {
@@ -84,15 +87,17 @@ class BalanceValidator:
                 'abs_deviation': abs_deviation
             }
             
-            # Clasificar por severidad
+            # Clasificar por severidad según sistema de fases
             if abs_deviation <= self.tolerance_percentage:
+                # Fase 1: Within target
                 violations['within_tolerance'].append(worker_info)
             elif abs_deviation <= self.emergency_limit:
+                # Fase 2: Within absolute limit (should only occur if Phase 2 activated)
                 violations['within_emergency'].append(worker_info)
-            elif abs_deviation <= self.critical_threshold:
-                violations['critical'].append(worker_info)
             else:
-                violations['extreme'].append(worker_info)
+                # >12% = CRITICAL ERROR - system should have blocked this
+                violations['critical'].append(worker_info)
+                violations['extreme'].append(worker_info)  # Keep for backward compatibility
             
             # Actualizar estadísticas
             stats['max_deviation'] = max(stats['max_deviation'], abs_deviation)
@@ -101,19 +106,18 @@ class BalanceValidator:
         if stats['total_workers'] > 0:
             stats['avg_deviation'] = stats['total_deviation'] / stats['total_workers']
         
-        # Log resumen
-        logging.info(f"📊 Balance Validation Summary:")
-        logging.info(f"   Within tolerance (≤{self.tolerance_percentage}%): {len(violations['within_tolerance'])} workers")
-        logging.info(f"   Emergency range ({self.tolerance_percentage}%-{self.emergency_limit}%): {len(violations['within_emergency'])} workers")
-        logging.info(f"   Critical (>{self.emergency_limit}%): {len(violations['critical'])} workers")
-        logging.info(f"   Extreme (>{self.critical_threshold}%): {len(violations['extreme'])} workers")
+        # Log resumen con sistema de fases
+        logging.info(f"📊 Balance Validation Summary (Phase System):")
+        logging.info(f"   Phase 1 target (≤{self.tolerance_percentage}%): {len(violations['within_tolerance'])} workers")
+        logging.info(f"   Phase 2 range ({self.tolerance_percentage}%-{self.emergency_limit}%): {len(violations['within_emergency'])} workers")
+        logging.info(f"   CRITICAL - Beyond absolute limit (>{self.emergency_limit}%): {len(violations['critical'])} workers")
         logging.info(f"   Max deviation: {stats['max_deviation']:.1f}%")
         logging.info(f"   Avg deviation: {stats['avg_deviation']:.1f}%")
         
         # Warnings para problemas críticos
-        if violations['extreme']:
-            logging.error(f"🚨 CRITICAL: {len(violations['extreme'])} workers with EXTREME deviations:")
-            for worker_info in violations['extreme']:
+        if violations['critical']:
+            logging.error(f"🚨 SYSTEM ERROR: {len(violations['critical'])} workers EXCEED ±12% ABSOLUTE LIMIT:")
+            for worker_info in violations['critical']:
                 logging.error(f"      {worker_info['worker_id']}: {worker_info['deviation_percentage']:+.1f}% "
                             f"({worker_info['assigned']}/{worker_info['target']} shifts)")
         
