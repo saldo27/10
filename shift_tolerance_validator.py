@@ -7,7 +7,15 @@ from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime, timedelta
 
 class ShiftToleranceValidator:
-    """Validador para asegurar que los shifts asignados respeten la tolerancia de +/-8%"""
+    """Validador para asegurar que los shifts asignados respeten la tolerancia por fases
+    
+    Sistema de tolerancia por fases:
+    - Fase 1 (Initial): ±8% (objetivo estricto)
+    - Fase 2 (Emergency): ±12% (límite absoluto, solo si cobertura < 95%)
+    
+    IMPORTANTE: Este validador verifica contra los límites configurados.
+    El enforcement activo está en schedule_builder._would_violate_tolerance()
+    """
     
     def __init__(self, scheduler):
         """
@@ -19,7 +27,10 @@ class ShiftToleranceValidator:
         self.scheduler = scheduler
         self.workers_data = scheduler.workers_data
         self.schedule = scheduler.schedule
-        self.tolerance_percentage = 8.0  # +/-8% tolerance as requested
+        # Phase 1 tolerance: ±8% (strict target)
+        self.tolerance_percentage = 8.0
+        # Phase 2 tolerance: ±12% (absolute maximum)
+        self.emergency_tolerance_percentage = 12.0
         
     def calculate_tolerance_bounds(self, target_shifts: int) -> Tuple[int, int]:
         """

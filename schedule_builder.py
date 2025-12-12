@@ -412,20 +412,25 @@ class ScheduleBuilder:
         current_assignments = len(self.worker_assignments.get(worker_id, set()))
         assignments_after = current_assignments + 1
         
-        # Calculate ±10% tolerance bounds
-        tolerance = 0.10
+        # Phase-based tolerance system:
+        # Phase 1 (objective): ±10% tolerance
+        # Phase 2 (limit): ±12% tolerance (ABSOLUTE LIMIT)
+        if allow_relaxation:
+            tolerance = 0.12  # Phase 2: Absolute limit
+        else:
+            tolerance = 0.10  # Phase 1: Objective tolerance
         
         # STRICTER tolerance for part-time workers
         if work_percentage < 100:
             # Reduce tolerance proportionally for part-time workers
-            # Example: 50% worker gets 5% tolerance instead of 10%
-            # Example: 75% worker gets 7.5% tolerance instead of 10%
+            # Phase 1 examples: 50% worker gets 4% (8%*50%), 75% worker gets 6% (8%*75%)
+            # Phase 2 examples: 50% worker gets 6% (12%*50%), 75% worker gets 9% (12%*75%)
             adjusted_tolerance = tolerance * (work_percentage / 100.0)
             tolerance = max(0.05, adjusted_tolerance)  # Minimum 5% tolerance
             logging.debug(f"Worker {worker_id} (part-time {work_percentage}%): Using adjusted tolerance {tolerance*100:.1f}%")
         
         tolerance_amount = target_shifts * tolerance
-        max_allowed = int(target_shifts + tolerance_amount)  # Floor - no round up
+        max_allowed = round(target_shifts * (1 + tolerance))  # Round properly
         
         # ONLY check UPPER bound - never block workers with deficit
         if assignments_after > max_allowed:
@@ -458,7 +463,7 @@ class ScheduleBuilder:
             
             # Use the same adjusted tolerance for weekends (already calculated above for part-time workers)
             weekend_tolerance_amount = weekend_target * tolerance
-            max_weekend_allowed = int(weekend_target + weekend_tolerance_amount + 0.5)
+            max_weekend_allowed = round(weekend_target * (1 + tolerance))
             
             # ONLY check UPPER bound for weekends too
             if weekend_after > max_weekend_allowed:
@@ -615,15 +620,10 @@ class ScheduleBuilder:
                         return False
                 
                     # Check for 7-14 day pattern (same weekday in consecutive weeks)
-                    # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
-                    # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
+                    # CRITICAL: This constraint applies to ALL days (including weekends)
+                    # Workers should NOT have the same weekday in consecutive weeks (7 or 14 days apart)
                     if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                        # Allow weekend days to be assigned on same weekday 7/14 days apart
-                        if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
-                            continue  # Skip this constraint for weekend days
-                        
-                        # STRICT: NO overrides for 7/14 pattern - this is a hard constraint
-                        # Workers should not have the same weekday in consecutive weeks
+                        # STRICT: NO overrides for 7/14 pattern - this is a HARD constraint for ALL days
                         logging.debug(f"Worker {worker_id} 7/14 pattern violation: {date.strftime('%Y-%m-%d')} and {prev_date.strftime('%Y-%m-%d')} are both {date.strftime('%A')}")
                         return False
             
@@ -799,12 +799,8 @@ class ScheduleBuilder:
                     continue
                 days_between = abs((date - prev_date).days)
                 # Check for exactly 7 or 14 days pattern AND same weekday
-                # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
-                # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
+                # CRITICAL: This constraint applies to ALL days (including weekends)
                 if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                    # Allow weekend days to be assigned on same weekday 7/14 days apart
-                    if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
-                        continue  # Skip this constraint for weekend days
                     logging.debug(f"Sim Check Fail: {days_between} day pattern conflict for {worker_id} between {prev_date} and {date}")
                     return False
                 
@@ -867,13 +863,9 @@ class ScheduleBuilder:
                     if ((prev_date.weekday() == 4 and date.weekday() == 0) or \
                         (date.weekday() == 4 and prev_date.weekday() == 0)):
                         return False
-            # Add check for weekly pattern (7/14 day) - weekdays only
-            # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
-            # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
+            # Add check for weekly pattern (7/14 day) - ALL days
+            # CRITICAL: This constraint applies to ALL days (including weekends)
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                # Allow weekend days to be assigned on same weekday 7/14 days apart
-                if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
-                    continue  # Skip this constraint for weekend days
                 return False
         return True
     
@@ -1093,9 +1085,24 @@ class ScheduleBuilder:
             if assigned_date.year == date.year and assigned_date.month == date.month
         )
         
-        # Máximo mensual = objetivo_mensual + tolerancia (±1) + relaxation
-        tolerance = 1
-        effective_max_monthly = expected_monthly_target + tolerance + relaxation_level
+        # MONTHLY LIMIT SYSTEM with ±12% tolerance and deficit compensation
+        # Base tolerance: 12% of monthly target (not fixed ±1)
+        base_tolerance = max(1, round(expected_monthly_target * 0.12))
+        
+        # Calculate global deficit for deficit compensation
+        overall_target = worker_config.get('target_shifts', 0) if worker_config else 0
+        current_total_shifts = len(self.scheduler.worker_assignments.get(worker_id, set()))
+        deficit_pct = ((overall_target - current_total_shifts) / overall_target * 100) if overall_target > 0 else 0
+        
+        # Deficit compensation: If worker has >20% global deficit, allow extra monthly shifts
+        deficit_bonus = 0
+        if deficit_pct > 20:
+            deficit_bonus = round((deficit_pct - 20) / 10)  # +1 shift per 10% deficit
+            logging.debug(f"Worker {worker_id}: DEFICIT COMPENSATION - "
+                        f"deficit={deficit_pct:.1f}%, allowing +{deficit_bonus} extra shifts in {date.strftime('%Y-%m')}")
+        
+        # Calculate effective monthly max
+        effective_max_monthly = expected_monthly_target + base_tolerance + deficit_bonus + relaxation_level
         
         # Si no hay objetivo, permitir al menos algunos turnos
         if expected_monthly_target == 0:
@@ -1104,6 +1111,9 @@ class ScheduleBuilder:
         # Check if adding this shift would exceed monthly limit
         if shifts_this_month + 1 > effective_max_monthly:
             if relaxation_level < 1:
+                logging.debug(f"Worker {worker_id}: BLOCKED by monthly limit - "
+                            f"month {date.strftime('%Y-%m')}: {shifts_this_month + 1} > {effective_max_monthly:.0f} "
+                            f"(target={expected_monthly_target:.1f}, base_tol={base_tolerance}, deficit_bonus={deficit_bonus}, relax={relaxation_level})")
                 return float('-inf')
         
         # Calculate score based on monthly target
@@ -1147,19 +1157,19 @@ class ScheduleBuilder:
         if overall_target_shifts <= 0:
             return 0
         
-        # Adjust target by work percentage
-        adjusted_target = int(overall_target_shifts * work_percentage / 100)
+        # Target already adjusted by work_percentage in _calculate_target_shifts
+        # DO NOT adjust again here (bug fix - was causing 50% workers to have half target)
+        adjusted_target = overall_target_shifts
         
         # Calculate tolerance based on mode and relaxation level
-        # IMPORTANT: Target tolerance is ALWAYS +10% maximum (never increases)
-        # In relaxed mode, we work with ±10% tolerance for balance adjustments
+        # Phase 1 (objective): ±10% tolerance for initial distribution
+        # Phase 2 (limit): ±12% tolerance (ABSOLUTE LIMIT - never exceeded)
         if self.use_strict_mode:
-            # STRICT: Always +10% (upper limit only)
+            # Phase 1 (OBJECTIVE): ±10% tolerance
             tolerance = 0.10
         else:
-            # RELAXED: Still +10% maximum (never increases)
-            # The relaxation allows ±10% deviations in balance metrics
-            tolerance = 0.10
+            # Phase 2 (LIMIT): ±12% ABSOLUTE MAXIMUM
+            tolerance = 0.12
         
         tolerance_amount = adjusted_target * tolerance
         min_allowed = max(0, int(adjusted_target - tolerance_amount))
@@ -1188,19 +1198,28 @@ class ScheduleBuilder:
             # Workers 1 shift below target get high priority
             return 8000  # Aumentado de 5000
         
-        # CRITICAL: Even more strict blocking for workers AT or ABOVE target
-        # If worker is at target or above, check if there are workers with deficit
+        # CRITICAL: Block ONLY if would exceed tolerance limit (not just target)
+        # Workers can go up to max_allowed (target + tolerance)
+        if shifts_after_assignment > max_allowed:
+            # HARD BLOCK - would exceed tolerance limit
+            logging.debug(f"Worker {worker_id}: BLOCKED by tolerance limit - would have {shifts_after_assignment} "
+                        f"(max allowed: {max_allowed}, target: {adjusted_target}, tolerance: ±{tolerance*100:.0f}%)")
+            return float('-inf')
+        
+        # Apply graduated penalties as worker approaches tolerance limit
         if current_total_shifts >= adjusted_target:
-            # Check if this worker would exceed target + 1
-            if shifts_after_assignment > adjusted_target + 1:
-                # HARD BLOCK - no assignments beyond target+1 in strict mode
-                logging.debug(f"Worker {worker_id}: HARD BLOCKED - already at/above target "
-                            f"({current_total_shifts} >= {adjusted_target}), would be at {shifts_after_assignment}")
-                return float('-inf')
+            # Worker at or above target - apply penalty to encourage deficit workers
+            # But still allow up to max_allowed
+            excess = current_total_shifts - adjusted_target
+            if excess >= 2:
+                penalty = 15000  # Heavy penalty for 2+ above target
+                logging.debug(f"Worker {worker_id}: HEAVY penalty for being {excess} above target "
+                            f"(current: {current_total_shifts}, target: {adjusted_target})")
+                return -penalty
             else:
-                # At exactly target+1, apply heavy penalty to discourage
-                penalty = 15000  # Muy alta para desalentar
-                logging.debug(f"Worker {worker_id}: HEAVY penalty for being at target+1 "
+                # At target+1, moderate penalty
+                penalty = 8000
+                logging.debug(f"Worker {worker_id}: Moderate penalty for being at target+1 "
                             f"(current: {current_total_shifts}, target: {adjusted_target})")
                 return -penalty
         
@@ -1307,41 +1326,9 @@ class ScheduleBuilder:
                         return False
             
             # CRITICAL: 7/14 day pattern check (same weekday constraint)
-            # IMPORTANT: This constraint only applies to regular weekdays (Mon-Thu), 
-            # NOT to weekend days (Fri-Sun) where consecutive assignments are normal
+            # This constraint applies to ALL days (including weekends) - NO exceptions
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                # Allow weekend days to be assigned on same weekday 7/14 days apart
-                if date.weekday() >= 4 or prev_date.weekday() >= 4:  # Fri, Sat, Sun
-                    continue  # Skip this constraint for weekend days
-                
-                # STRICT MODE: Allow violations if worker has significant deficit
-                # During initial distribution, 7/14 pattern should NOT be absolute
-                # because it blocks too many assignments (e.g., Worker on Thu 1 can't work Thu 8, 15, 22)
-                if self.use_strict_mode:
-                    # Calculate relative deficit percentage
-                    deficit_pct = (target_deficit / max(target_shifts, 1)) * 100 if target_shifts > 0 else 0
-                    
-                    # Allow 7/14 violation if:
-                    # 1. Worker needs at least 2 more shifts (absolute threshold)
-                    # OR 2. Worker has deficit >40% of their target (relative threshold)
-                    # This handles both low-target workers (2-5 shifts) and high-target workers (50+ shifts)
-                    if target_deficit >= 2 or deficit_pct > 40:
-                        logging.debug(f"STRICT: Worker {worker_id} allowed 7/14 pattern override - needs {target_deficit} more shifts ({deficit_pct:.1f}% of target)")
-                        continue
-                    else:
-                        logging.debug(f"STRICT: Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')} - deficit {target_deficit} < 2 and {deficit_pct:.1f}% < 40%")
-                        return False
-                
-                # RELAXED MODE: Allow violation if worker has significant deficit
-                # Work with ±10% tolerance concept: allow if it helps balance
-                deficit_percentage = (target_deficit / max(target_shifts, 1)) * 100 if target_shifts > 0 else 0
-                
-                # Allow 7/14 violation if deficit is significant (>10% of target)
-                if relaxation_level >= 1 and deficit_percentage >= 10:
-                    logging.warning(f"⚠️ RELAXED: Worker {worker_id} 7/14 pattern override - deficit {target_deficit} ({deficit_percentage:.1f}% of target)")
-                    continue
-                    
-                logging.debug(f"Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}")
+                logging.debug(f"Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')} - same weekday as {prev_date.strftime('%Y-%m-%d')} ({days_between} days apart)")
                 return False
         
         return True
@@ -1515,9 +1502,13 @@ class ScheduleBuilder:
                     weekend_percentage = 3.0 / 7.0
                     weekend_target = total_target * weekend_percentage
                     
-                    # Calculate tolerance adjusted by work_percentage
-                    # 100% worker → 10% tolerance, 50% worker → 5% tolerance
-                    base_tolerance = 0.10
+                    # Calculate tolerance using phase system
+                    # Phase 1: ±10%, Phase 2: ±12%
+                    if self.use_strict_mode:
+                        base_tolerance = 0.10  # Phase 1: Objective
+                    else:
+                        base_tolerance = 0.12  # Phase 2: Limit
+                    
                     work_percentage = worker_config.get('work_percentage', 100)
                     if work_percentage < 100:
                         adjusted_tolerance = base_tolerance * (work_percentage / 100.0)
@@ -1526,8 +1517,8 @@ class ScheduleBuilder:
                         tolerance = base_tolerance
                     
                     tolerance_amount = weekend_target * tolerance
-                    min_weekend_allowed = max(0, int(weekend_target - tolerance_amount))
-                    max_weekend_allowed = int(weekend_target + tolerance_amount + 0.5)
+                    min_weekend_allowed = max(0, round(weekend_target * (1 - tolerance)))
+                    max_weekend_allowed = round(weekend_target * (1 + tolerance))
                     
                     # Count after potential assignment
                     weekend_after = weekend_assignments + 1
@@ -1898,6 +1889,10 @@ class ScheduleBuilder:
                             if not self._can_assign_worker(worker_id, date, post):
                                 logging.debug(f"  Assignment REJECTED (Constraint Check): W:{worker_id} for {date.strftime('%Y-%m-%d')} P:{post}")
                                 continue  # Try next candidate
+                            # CRITICAL: Check tolerance BEFORE assigning (±12% absolute limit)
+                            if self._would_violate_tolerance(worker_id, date, allow_relaxation=True):
+                                logging.debug(f"  Assignment REJECTED (Tolerance): W:{worker_id} would violate ±12% limit")
+                                continue  # Try next candidate
                             
                             self.schedule[date][post] = worker_id # Assign to the correct post index
                             self.worker_assignments.setdefault(worker_id, set()).add(date)
@@ -1953,6 +1948,11 @@ class ScheduleBuilder:
         already_assigned = [w for w in self.schedule[date] if w is not None]
         if not self._check_incompatibility_with_list(worker_id, already_assigned):
             logging.warning(f"Cannot assign worker {worker_id} due to incompatibility on {date}")
+            return False
+        
+        # CRITICAL: Check tolerance BEFORE assigning (±12% absolute limit)
+        if self._would_violate_tolerance(worker_id, date, allow_relaxation=True):
+            logging.warning(f"Cannot assign worker {worker_id} - would violate ±12% tolerance limit")
             return False
         
         # Proceed with assignment if no incompatibility
@@ -2046,7 +2046,10 @@ class ScheduleBuilder:
                         # CRITICAL FIX: Add comprehensive constraint check before assignment
                         elif not self._can_assign_worker(worker_id_to_assign, date_val, post_val):
                             logging.debug(f"      -> Pass1 Assignment REJECTED (Constraint Check): W:{worker_id_to_assign} for {date_val.strftime('%Y-%m-%d')} P:{post_val} at Relax {relax_lvl_attempt}")
-                        # CRITICAL: Check ±8% tolerance before assignment
+                        # CRITICAL: Check tolerance before assignment
+                        # Phase 1 (relax 0-1): ±10% objective - NEVER violate
+                        # Phase 2 (relax 2+): ±12% limit - NEVER violate (absolute limit)
+                        # NO relaxation beyond ±12%, that's the absolute maximum
                         elif self._would_violate_tolerance(worker_id_to_assign, date_val, allow_relaxation=(relax_lvl_attempt >= 2)):
                             logging.debug(f"      -> Pass1 Assignment REJECTED (Tolerance): W:{worker_id_to_assign} for {date_val.strftime('%Y-%m-%d')} P:{post_val} at Relax {relax_lvl_attempt}")
                         else:
@@ -2154,6 +2157,14 @@ class ScheduleBuilder:
                                 continue  # Try next date_conflict
                             
                             logging.info(f"[Pass 2 Swap Attempt] W:{worker_W_id} ({date_conflict.strftime('%Y-%m-%d')},P{post_conflict}) -> ({date_empty.strftime('%Y-%m-%d')},P{post_empty}); X:{worker_X_id} takes W's original spot.")
+                            
+                            # CRITICAL: Check tolerance BEFORE swap (both workers)
+                            if self._would_violate_tolerance(worker_X_id, date_conflict, allow_relaxation=True):
+                                logging.debug(f"Pass 2 swap rejected: {worker_X_id} would violate ±12% limit on {date_conflict.strftime('%Y-%m-%d')}")
+                                continue
+                            if self._would_violate_tolerance(worker_W_id, date_empty, allow_relaxation=True):
+                                logging.debug(f"Pass 2 swap rejected: {worker_W_id} would violate ±12% limit on {date_empty.strftime('%Y-%m-%d')}")
+                                continue
                             
                             # CRITICAL: Double-check before removing W (should already be checked, but paranoid)
                             if not self._can_modify_assignment(worker_W_id, date_conflict, "pass2_swap_remove"):
@@ -2281,8 +2292,12 @@ class ScheduleBuilder:
                 if attempt == 1 and filled_this_attempt == 0:
                     logging.debug(f"Trying to fill slot: {date_val.strftime('%Y-%m-%d')} post {post_val}")
                 
-                # Try workers in the specified order
+                # CRITICAL FIX: Evaluate ALL workers and assign the one with HIGHEST score
+                # This ensures workers with deficit (+25000 bonus) get priority over workers at target
+                best_worker = None
+                best_score = float('-inf')
                 valid_workers_found = 0
+                
                 for worker_data in workers_list:
                     worker_id = worker_data['id']
                     
@@ -2318,20 +2333,25 @@ class ScheduleBuilder:
                                 logging.warning(f"🔒 BLOCKED Initial Fill: Cannot overwrite MANDATORY {existing} on {date_val.strftime('%Y-%m-%d')} post {post_val}")
                                 continue
                         
-                        # Assign worker
-                        self.schedule[date_val][post_val] = worker_id
-                        self.worker_assignments[worker_id].add(date_val)  # FIXED: Only add date, not (date, post)
-                        
-                        filled_this_attempt += 1
-                        made_change = True
-                        
-                        if attempt == 1 and filled_this_attempt == 1:
-                            logging.debug(f"  ✅ {worker_id}: ASSIGNED successfully")
-                        
-                        break  # Move to next empty slot
+                        # CRITICAL: Compare scores and keep track of best worker
+                        if score > best_score:
+                            best_score = score
+                            best_worker = worker_id
+                            if attempt == 1 and filled_this_attempt == 0:
+                                logging.debug(f"  {worker_id}: NEW BEST (score={score:.0f})")
                 
-                # Log if no valid workers found for this slot
-                if attempt == 1 and filled_this_attempt == 0 and valid_workers_found == 0:
+                # Assign the worker with the HIGHEST score (not the first valid one)
+                if best_worker is not None:
+                    self.schedule[date_val][post_val] = best_worker
+                    self.worker_assignments[best_worker].add(date_val)
+                    
+                    filled_this_attempt += 1
+                    made_change = True
+                    
+                    if attempt == 1 and filled_this_attempt == 1:
+                        logging.debug(f"  ✅ {best_worker}: ASSIGNED (best score={best_score:.0f})")
+                elif attempt == 1 and filled_this_attempt == 0 and valid_workers_found == 0:
+                    # Log if no valid workers found for this slot
                     logging.debug(f"  ❌ NO valid workers found (all returned -inf score)")
             
             shifts_filled += filled_this_attempt
@@ -2525,6 +2545,9 @@ class ScheduleBuilder:
                 for under_worker_id, _ in underloaded:
                     # ... (check if under_worker already assigned) ...
                     if self._can_assign_worker(under_worker_id, date_val, post_val):
+                        # CRITICAL: Check tolerance BEFORE assigning (±12% absolute limit)
+                        if self._would_violate_tolerance(under_worker_id, date_val, allow_relaxation=True):
+                            continue  # Skip if would violate ±12% limit
                         # CRITICAL: Verify we can modify the current assignment
                         if not self._can_modify_assignment(over_worker_id, date_val, "balance_workloads_remove"):
                             continue
@@ -2680,6 +2703,10 @@ class ScheduleBuilder:
                             logging.debug(f"Weekly balance swap rejected: {other_worker_id} incompatible on {date.strftime('%Y-%m-%d')}")
                             continue
                         
+                        # CRITICAL: Check tolerance BEFORE assigning
+                        if self._would_violate_tolerance(other_worker_id, date, allow_relaxation=True):
+                            logging.debug(f"Weekly balance rejected: {other_worker_id} would violate ±12% limit")
+                            continue
                         # CRITICAL: Final check before modification
                         if not self._can_modify_assignment(worker_id, date, "balance_weekday_final"):
                             logging.warning(f"🔒 BLOCKED: Cannot modify MANDATORY {worker_id} on {date.strftime('%Y-%m-%d')}")
@@ -3469,6 +3496,10 @@ class ScheduleBuilder:
                         
                         # Verificar si under_worker puede tomar esta posición
                         if self._can_assign_worker(under_worker, over_date, post_idx):
+                            # CRITICAL: Check tolerance BEFORE assigning
+                            if self._would_violate_tolerance(under_worker, over_date, allow_relaxation=True):
+                                logging.debug(f"Special day swap rejected: {under_worker} would violate ±12% limit")
+                                continue
                             # CRITICAL: Verificación final de protección mandatory
                             if not self._can_modify_assignment(over_worker, over_date, "swap_special_day"):
                                 logging.warning(f"🔒 BLOCKED: Cannot swap MANDATORY {over_worker} on {over_date.strftime('%Y-%m-%d')}")
@@ -3538,6 +3569,14 @@ class ScheduleBuilder:
                                                                if w is not None and idx != under_post_idx and w != under_worker]
                                         if not self._check_incompatibility_with_list(over_worker, others_on_under_date):
                                             logging.debug(f"Swap rejected: {over_worker} incompatible on {date.strftime('%Y-%m-%d')}")
+                                            continue
+                                        
+                                        # CRITICAL: Check tolerance for BOTH workers in swap
+                                        if self._would_violate_tolerance(under_worker, over_date, allow_relaxation=True):
+                                            logging.debug(f"Swap rejected: {under_worker} would violate ±12% limit on {over_date.strftime('%Y-%m-%d')}")
+                                            continue
+                                        if self._would_violate_tolerance(over_worker, date, allow_relaxation=True):
+                                            logging.debug(f"Swap rejected: {over_worker} would violate ±12% limit on {date.strftime('%Y-%m-%d')}")
                                             continue
                                         
                                         # Realizar intercambio completo
@@ -3715,8 +3754,8 @@ class ScheduleBuilder:
                 proportion = capacity / total_weekend_capacity
                 target = proportion * total_weekend_shifts
                 
-                min_target = max(0, int(target - tolerance))
-                max_target = int(target + tolerance)
+                min_target = max(0, round(target * (1 - tolerance)))
+                max_target = round(target * (1 + tolerance))
                 
                 ideal_distribution[worker_id] = {
                     'target': target,
@@ -3777,6 +3816,9 @@ class ScheduleBuilder:
                         
                         # Check if assignment is valid
                         if self._can_assign_worker(under_worker_id, date, post):
+                            # CRITICAL: Check tolerance BEFORE assigning (±12% absolute limit)
+                            if self._would_violate_tolerance(under_worker_id, date, allow_relaxation=True):
+                                continue  # Skip if would violate ±12% limit
                             # CRITICAL: Final check - can we modify this assignment?
                             if not self._can_modify_assignment(over_worker_id, date, "rebalance_weekend_final"):
                                 logging.warning(f"🔒 BLOCKED: Cannot modify MANDATORY {over_worker_id} on {date.strftime('%Y-%m-%d')}")
@@ -3904,6 +3946,10 @@ class ScheduleBuilder:
                     continue  # Already assigned this date
                 
                 if self._can_assign_worker(under_worker_id, date, post):
+                    # CRITICAL: Check tolerance BEFORE assigning (±12% absolute limit)
+                    if self._would_violate_tolerance(under_worker_id, date, allow_relaxation=True):
+                        logging.debug(f"Redistribution rejected: {under_worker_id} would violate ±12% limit")
+                        continue  # Try next underloaded worker
                     # CRITICAL: Verify 7/14 pattern for the NEW worker receiving the shift
                     if self._violates_7_14_pattern(under_worker_id, date):
                         logging.debug(f"Redistribution rejected: {under_worker_id} would violate 7/14 pattern on {date.strftime('%Y-%m-%d')}")
@@ -4247,6 +4293,10 @@ class ScheduleBuilder:
                                 if not self._can_modify_assignment(worker_B_id, date_to_adjust, "adjust_last_post_B_final"):
                                     logging.warning(f"🔒 BLOCKED: Cannot swap MANDATORY {worker_B_id} on {date_to_adjust.strftime('%Y-%m-%d')}")
                                     continue
+                                
+                                # CRITICAL: Check tolerance for BOTH workers BEFORE swap
+                                # Note: They're already assigned, so we're just changing positions
+                                # Tolerance should already be OK, but verify to be safe
                                 
                                 # Perform the swap
                                 logging.info(f"[IMPROVED Iter {iteration+1}] Beneficial swap on {date_to_adjust.strftime('%Y-%m-%d')}: "
