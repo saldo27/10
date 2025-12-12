@@ -1,0 +1,33 @@
+# Large log files
+*.log
+logs/
+historical_data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backup and temporary files
+.backup_local/
+*.bak
+*~
+.DS_Store
+
+# Build files
+*.pdf
+dist/
+build/
+
+# Environment
+.env
+venv/
+env/
