@@ -24,7 +24,7 @@ setup_logging()
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Sistema de Generación de Horarios",
+    page_title="Sistema de Generación de Guardias",
     page_icon="📅",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -75,9 +75,29 @@ if 'generation_log' not in st.session_state:
 if 'config' not in st.session_state:
     st.session_state.config = SchedulerConfig.get_default_config()
 
+# Real-time features
+if 'real_time_enabled' not in st.session_state:
+    st.session_state.real_time_enabled = False
+if 'change_history' not in st.session_state:
+    st.session_state.change_history = []
+if 'undo_stack' not in st.session_state:
+    st.session_state.undo_stack = []
+if 'redo_stack' not in st.session_state:
+    st.session_state.redo_stack = []
+
+# Predictive analytics
+if 'predictive_enabled' not in st.session_state:
+    st.session_state.predictive_enabled = False
+if 'demand_forecasts' not in st.session_state:
+    st.session_state.demand_forecasts = None
+if 'optimization_recommendations' not in st.session_state:
+    st.session_state.optimization_recommendations = []
+if 'analytics_insights' not in st.session_state:
+    st.session_state.analytics_insights = []
+
 # Funciones auxiliares
 def load_workers_from_file(uploaded_file):
-    """Cargar trabajadores desde archivo JSON"""
+    """Cargar Médicos desde archivo JSON"""
     try:
         data = json.load(uploaded_file)
         st.session_state.workers_data = data
@@ -86,24 +106,24 @@ def load_workers_from_file(uploaded_file):
         return False, f"❌ Error al cargar archivo: {str(e)}"
 
 def save_workers_to_file():
-    """Guardar trabajadores a JSON"""
+    """Guardar Médicos en JSON"""
     return json.dumps(st.session_state.workers_data, indent=2, ensure_ascii=False)
 
 def calculate_target_shifts_for_worker(worker, start_date, end_date, num_shifts, variable_shifts):
-    """Calcular turnos objetivo automáticamente para un trabajador"""
+    """Calcular turnos objetivo automáticamente para cada médico"""
     # Usar período personalizado si existe
     worker_start = start_date
     worker_end = end_date
     
     if worker.get('custom_start_date'):
         try:
-            worker_start = datetime.strptime(worker['custom_start_date'], '%Y-%m-%d')
+            worker_start = datetime.strptime(worker['custom_start_date'], '%d-%m-%Y')
         except:
             pass
     
     if worker.get('custom_end_date'):
         try:
-            worker_end = datetime.strptime(worker['custom_end_date'], '%Y-%m-%d')
+            worker_end = datetime.strptime(worker['custom_end_date'], '%d-%m-%Y')
         except:
             pass
     
@@ -189,9 +209,9 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
         
         if success:
             st.session_state.schedule = scheduler.schedule
-            return True, "✅ Horario generado exitosamente"
+            return True, "✅ Calendario generado exitosamente"
         else:
-            return False, "❌ Error: No se pudo generar el horario"
+            return False, "❌ Error: No se pudo generar el calendario"
             
     except Exception as e:
         error_msg = f"Error en generación: {str(e)}"
@@ -200,7 +220,7 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
         return False, f"❌ Error: {str(e)}"
 
 def get_schedule_dataframe():
-    """Convertir horario a DataFrame para visualización"""
+    """Convertir calendario a DataFrame para visualización"""
     if st.session_state.schedule is None:
         return None
     
@@ -213,7 +233,7 @@ def get_schedule_dataframe():
     for date in dates:
         workers = schedule[date]
         row = {
-            'Fecha': date.strftime('%Y-%m-%d'),
+            'Fecha': date.strftime('%d-%m-%Y'),
             'Día': ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'][date.weekday()]
         }
         for i, worker in enumerate(workers):
@@ -223,7 +243,7 @@ def get_schedule_dataframe():
     return pd.DataFrame(data)
 
 def get_worker_statistics():
-    """Obtener estadísticas de asignaciones por trabajador"""
+    """Obtener estadísticas de asignaciones por médico"""
     if st.session_state.scheduler is None:
         return None
     
@@ -241,7 +261,7 @@ def get_worker_statistics():
         deviation_pct = (deviation / target * 100) if target > 0 else 0
         
         stats.append({
-            'Trabajador': worker_id,
+            'Médico': worker_id,
             'Objetivo': target,
             'Asignados': current,
             'Desviación': deviation,
@@ -277,7 +297,7 @@ def check_violations():
             for w2 in workers_on_date[i+1:]:
                 if w2 in incomp_map.get(w1, set()) or w1 in incomp_map.get(w2, set()):
                     violations['incompatibilidades'].append(
-                        f"{date.strftime('%Y-%m-%d')}: {w1} ↔ {w2}"
+                        f"{date.strftime('%d-%m-%Y')}: {w1} ↔ {w2}"
                     )
     
     # Check 7/14 pattern
@@ -291,15 +311,263 @@ def check_violations():
                 
                 if same_weekday and days_diff in [7, 14] and is_weekday:
                     violations['patron_7_14'].append(
-                        f"{worker_id}: {date1.strftime('%Y-%m-%d')} → {date2.strftime('%Y-%m-%d')}"
+                        f"{worker_id}: {date1.strftime('%d-%m-%Y')} → {date2.strftime('%d-%m-%Y')}"
                     )
     
     return violations
 
+# ==================== REAL-TIME FEATURES ====================
+
+def assign_worker_real_time(worker_id, date, post_index):
+    """Asignar médico en tiempo real con validación"""
+    if not st.session_state.real_time_enabled or st.session_state.scheduler is None:
+        return False, "Real-time features not enabled"
+    
+    try:
+        scheduler = st.session_state.scheduler
+        
+        # Check if real-time engine exists
+        if hasattr(scheduler, 'assign_worker_real_time'):
+            result = scheduler.assign_worker_real_time(worker_id, date, post_index, 'streamlit_user')
+            if result.get('success'):
+                # Save to undo stack
+                st.session_state.undo_stack.append({
+                    'action': 'assign',
+                    'worker_id': worker_id,
+                    'date': date,
+                    'post': post_index,
+                    'timestamp': datetime.now()
+                })
+                st.session_state.redo_stack = []  # Clear redo stack
+                return True, result.get('message', 'Worker assigned')
+            return False, result.get('message', 'Assignment failed')
+        else:
+            # Fallback: manual assignment
+            if date not in scheduler.schedule:
+                return False, "Date not in schedule"
+            if post_index >= len(scheduler.schedule[date]):
+                return False, "Invalid post index"
+            
+            # Simple assignment
+            old_worker = scheduler.schedule[date][post_index]
+            scheduler.schedule[date][post_index] = worker_id
+            
+            # Update worker_assignments
+            if worker_id not in scheduler.worker_assignments:
+                scheduler.worker_assignments[worker_id] = []
+            scheduler.worker_assignments[worker_id].append(date)
+            
+            # Save to undo stack
+            st.session_state.undo_stack.append({
+                'action': 'assign',
+                'worker_id': worker_id,
+                'old_worker': old_worker,
+                'date': date,
+                'post': post_index,
+                'timestamp': datetime.now()
+            })
+            st.session_state.redo_stack = []
+            
+            return True, f"Assigned {worker_id} to {date.strftime('%d-%m-%Y')}"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+def undo_last_change():
+    """Deshacer último cambio"""
+    if not st.session_state.undo_stack:
+        return False, "No changes to undo"
+    
+    try:
+        last_change = st.session_state.undo_stack.pop()
+        scheduler = st.session_state.scheduler
+        
+        if last_change['action'] == 'assign':
+            # Revert assignment
+            date = last_change['date']
+            post = last_change['post']
+            old_worker = last_change.get('old_worker')
+            
+            scheduler.schedule[date][post] = old_worker
+            
+            # Update worker_assignments
+            worker_id = last_change['worker_id']
+            if worker_id in scheduler.worker_assignments and date in scheduler.worker_assignments[worker_id]:
+                scheduler.worker_assignments[worker_id].remove(date)
+            
+            # Save to redo stack
+            st.session_state.redo_stack.append(last_change)
+            
+            return True, "Change undone"
+        
+        return False, "Unknown action type"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+def redo_last_change():
+    """Rehacer último cambio deshecho"""
+    if not st.session_state.redo_stack:
+        return False, "No changes to redo"
+    
+    try:
+        last_undone = st.session_state.redo_stack.pop()
+        scheduler = st.session_state.scheduler
+        
+        if last_undone['action'] == 'assign':
+            # Redo assignment
+            date = last_undone['date']
+            post = last_undone['post']
+            worker_id = last_undone['worker_id']
+            
+            scheduler.schedule[date][post] = worker_id
+            
+            # Update worker_assignments
+            if worker_id not in scheduler.worker_assignments:
+                scheduler.worker_assignments[worker_id] = []
+            scheduler.worker_assignments[worker_id].append(date)
+            
+            # Save to undo stack
+            st.session_state.undo_stack.append(last_undone)
+            
+            return True, "Change redone"
+        
+        return False, "Unknown action type"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+
+# ==================== PREDICTIVE ANALYTICS ====================
+
+def generate_demand_forecasts():
+    """Generar pronósticos de demanda"""
+    if not st.session_state.predictive_enabled or st.session_state.scheduler is None:
+        return False, "Predictive analytics not enabled", None
+    
+    try:
+        scheduler = st.session_state.scheduler
+        
+        # Check if predictive analytics exists
+        if hasattr(scheduler, 'generate_demand_forecasts'):
+            result = scheduler.generate_demand_forecasts(horizon=30)
+            if result.get('success'):
+                forecasts = result.get('forecasts', {})
+                st.session_state.demand_forecasts = forecasts
+                return True, "Forecasts generated successfully", forecasts
+            return False, result.get('message', 'Forecast generation failed'), None
+        else:
+            # Fallback: basic heuristic forecasting
+            schedule = scheduler.schedule
+            if not schedule:
+                return False, "No schedule data available", None
+            
+            # Calculate average daily demand
+            total_slots = sum(len([w for w in workers if w]) for workers in schedule.values())
+            avg_daily = total_slots / len(schedule) if schedule else 0
+            
+            # Simple forecast: assume same average for next 30 days
+            forecasts = {
+                'daily_demand': [avg_daily] * 30,
+                'method': 'basic_heuristic',
+                'confidence': 'low'
+            }
+            
+            st.session_state.demand_forecasts = forecasts
+            return True, "Basic forecasts generated", forecasts
+    except Exception as e:
+        return False, f"Error: {str(e)}", None
+
+def get_optimization_recommendations():
+    """Obtener recomendaciones de optimización"""
+    if not st.session_state.predictive_enabled or st.session_state.scheduler is None:
+        return []
+    
+    try:
+        scheduler = st.session_state.scheduler
+        
+        # Check if predictive optimizer exists
+        if hasattr(scheduler, 'run_predictive_optimization'):
+            result = scheduler.run_predictive_optimization()
+            if result.get('success'):
+                recommendations = result.get('optimization_results', {}).get('optimization_recommendations', [])
+                st.session_state.optimization_recommendations = recommendations
+                return recommendations
+        
+        # Fallback: basic recommendations based on statistics
+        recommendations = []
+        stats_df = get_worker_statistics()
+        
+        if stats_df is not None:
+            # Find overloaded workers
+            for _, row in stats_df.iterrows():
+                deviation = row['Desviación']
+                if deviation > 3:
+                    recommendations.append({
+                        'type': 'overload',
+                        'worker': row['Trabajador'],
+                        'message': f"{row['Trabajador']} has {deviation} extra shifts",
+                        'priority': 'high' if deviation > 5 else 'medium'
+                    })
+                elif deviation < -3:
+                    recommendations.append({
+                        'type': 'underload',
+                        'worker': row['Trabajador'],
+                        'message': f"{row['Trabajador']} needs {abs(deviation)} more shifts",
+                        'priority': 'medium'
+                    })
+        
+        st.session_state.optimization_recommendations = recommendations
+        return recommendations
+    except Exception as e:
+        logging.error(f"Error getting recommendations: {e}")
+        return []
+
+def get_predictive_insights():
+    """Obtener insights predictivos"""
+    if not st.session_state.predictive_enabled:
+        return []
+    
+    insights = []
+    
+    # Analyze current schedule
+    if st.session_state.scheduler:
+        scheduler = st.session_state.scheduler
+        schedule = scheduler.schedule
+        
+        if schedule:
+            # Coverage insight
+            total_slots = sum(len(workers) for workers in schedule.values())
+            filled_slots = sum(len([w for w in workers if w]) for workers in schedule.values())
+            coverage = (filled_slots / total_slots * 100) if total_slots > 0 else 0
+            
+            if coverage < 95:
+                insights.append({
+                    'type': 'warning',
+                    'title': 'Low Coverage',
+                    'message': f'Current coverage is {coverage:.1f}%. Consider adding more workers or adjusting constraints.'
+                })
+            elif coverage >= 98:
+                insights.append({
+                    'type': 'success',
+                    'title': 'Excellent Coverage',
+                    'message': f'Schedule has {coverage:.1f}% coverage. Well balanced!'
+                })
+            
+            # Balance insight
+            stats_df = get_worker_statistics()
+            if stats_df is not None:
+                avg_deviation = stats_df['Desviación'].abs().mean()
+                if avg_deviation > 2:
+                    insights.append({
+                        'type': 'info',
+                        'title': 'Balance Opportunity',
+                        'message': f'Average deviation is {avg_deviation:.1f} shifts. Consider rebalancing.'
+                    })
+    
+    st.session_state.analytics_insights = insights
+    return insights
+
 # ==================== INTERFAZ PRINCIPAL ====================
 
 # Header
-st.title("📅 Sistema de Generación de Horarios")
+st.title("📅 Sistema de Generación de Guardias")
 st.markdown("---")
 
 # Sidebar - Configuración y Controles
@@ -313,13 +581,13 @@ with st.sidebar:
     with col1:
         start_date = st.date_input(
             "Fecha Inicial",
-            value=datetime(2024, 12, 1),
+            value=datetime(2026, 1, 1),
             help="Fecha de inicio del período a programar"
         )
     with col2:
         end_date = st.date_input(
             "Fecha Final",
-            value=datetime(2024, 12, 31),
+            value=datetime(2026, 12, 31),
             help="Fecha de fin del período a programar"
         )
     
@@ -332,8 +600,8 @@ with st.sidebar:
     # Festivos (Holidays)
     st.subheader("🎉 Festivos")
     holidays_input = st.text_area(
-        "Fechas festivas (una por línea, formato: YYYY-MM-DD)",
-        value="2024-12-25\n2024-12-26\n2025-01-01",
+        "Fechas festivas (una por línea, formato: DD-MM-YYYY)",
+        value="24-12-2026\n25-12-2026\n01-01-2027",
         height=100,
         help="Días festivos donde se aplicarán reglas especiales"
     )
@@ -344,7 +612,7 @@ with st.sidebar:
         line = line.strip()
         if line:
             try:
-                holiday_date = datetime.strptime(line, '%Y-%m-%d')
+                holiday_date = datetime.strptime(line, '%d-%m-%Y')
                 holidays.append(holiday_date)
             except:
                 st.warning(f"⚠️ Fecha inválida ignorada: {line}")
@@ -367,23 +635,23 @@ with st.sidebar:
     
     # Período con número de guardias por defecto
     num_shifts = st.number_input(
-        "Turnos por día (por defecto)",
+        "Guardias por día (por defecto)",
         min_value=1,
         max_value=10,
         value=st.session_state.config.get('num_shifts', 3),
-        help="Número de puestos/turnos a cubrir por día"
+        help="Número de Guardias a cubrir por día"
     )
     st.session_state.config['num_shifts'] = num_shifts
     
     # Variable shifts (períodos con diferente número de guardias)
     with st.expander("📊 Períodos con guardias variables"):
-        st.markdown("**Configurar días con diferente número de turnos**")
+        st.markdown("**Configurar días con diferente número de guardias**")
         
         variable_shifts_text = st.text_area(
-            "Formato: YYYY-MM-DD: número",
-            value="2024-12-25: 2\n2024-12-26: 2",
+            "Formato: DD-MM-YYYY: número",
+            value="25-12-2024: 2\n26-12-2024: 2",
             height=100,
-            help="Días específicos con diferente número de turnos"
+            help="Días específicos con diferente número de guardias"
         )
         
         variable_shifts = []
@@ -392,7 +660,7 @@ with st.sidebar:
             if ':' in line:
                 try:
                     date_str, shifts_str = line.split(':')
-                    date_obj = datetime.strptime(date_str.strip(), '%Y-%m-%d')
+                    date_obj = datetime.strptime(date_str.strip(), '%d-%m-%Y')
                     shifts_num = int(shifts_str.strip())
                     # El scheduler espera: start_date, end_date, shifts
                     # Para un día específico, start_date == end_date
@@ -413,11 +681,11 @@ with st.sidebar:
     
     with col_gap:
         gap_between_shifts = st.number_input(
-            "Días mínimos entre turnos",
+            "Días mínimos entre guardias",
             min_value=0,
             max_value=7,
             value=st.session_state.config.get('gap_between_shifts', 2),
-            help="Número mínimo de días de descanso entre turnos consecutivos"
+            help="Número mínimo de días de descanso entre guardias consecutivos"
         )
         st.session_state.config['gap_between_shifts'] = gap_between_shifts
     
@@ -449,20 +717,77 @@ with st.sidebar:
         )
         st.session_state.config['weekend_tolerance'] = weekend_tolerance
     
+    # Dual-Mode Scheduler Configuration
+    with st.expander("🔀 Dual-Mode Scheduler (Strict + Relaxed)"):
+        st.markdown("**Configure strict initial distribution and relaxed optimization**")
+        
+        enable_dual_mode = st.checkbox(
+            "Enable dual-mode scheduler",
+            value=st.session_state.config.get('enable_dual_mode', True),
+            help="Use strict initial distribution followed by relaxed iterative optimization"
+        )
+        st.session_state.config['enable_dual_mode'] = enable_dual_mode
+        
+        if enable_dual_mode:
+            st.info("ℹ️ Dual-mode: Strict initial (90-95% coverage) → Relaxed optimization (98-100%)")
+            
+            num_attempts = st.slider(
+                "Initial attempts",
+                min_value=5,
+                max_value=60,
+                value=st.session_state.config.get('num_initial_attempts', 30),
+                help="Number of strict initial distribution attempts (more = better quality)"
+            )
+            st.session_state.config['num_initial_attempts'] = num_attempts
+            
+            st.markdown("**Relaxation Parameters (Iterative Phase)**")
+            st.caption("⚠️ Restricciones NUNCA relajadas: Mandatory, Incompatibilidades, Days Off, **Patrón 7/14**")
+            st.caption("📊 Target: Siempre +10% máximo (no aumenta)")
+            st.caption("⏳ Gap: Permite gap-1 solo si trabajador necesita ≥3 turnos")
+            st.info("ℹ️ El patrón 7/14 (mismo día de semana a 7 o 14 días) es una restricción INMOVIBLE que NUNCA se relaja en ningún modo.")
+    
+    # Real-Time Features
+    with st.expander("⚡ Real-Time Features"):
+        enable_real_time = st.checkbox(
+            "Enable real-time editing",
+            value=st.session_state.config.get('enable_real_time', False),
+            help="Enable interactive schedule editing with undo/redo"
+        )
+        st.session_state.config['enable_real_time'] = enable_real_time
+        st.session_state.real_time_enabled = enable_real_time
+        
+        if enable_real_time:
+            st.success("✅ Real-time editing enabled")
+            st.caption("You can manually assign/unassign workers in the Calendar tab")
+    
+    # Predictive Analytics
+    with st.expander("🔮 Predictive Analytics"):
+        enable_predictive = st.checkbox(
+            "Enable predictive analytics",
+            value=st.session_state.config.get('enable_predictive_analytics', False),
+            help="Enable AI-powered demand forecasting and optimization recommendations"
+        )
+        st.session_state.config['enable_predictive_analytics'] = enable_predictive
+        st.session_state.predictive_enabled = enable_predictive
+        
+        if enable_predictive:
+            st.success("✅ Predictive analytics enabled")
+            st.caption("View forecasts and recommendations in the Analytics tab")
+    
     st.markdown("---")
     
     # Botón de generación
     st.subheader("🚀 Generar Horario")
     
     if len(st.session_state.workers_data) == 0:
-        st.warning("⚠️ Primero agregue trabajadores")
+        st.warning("⚠️ Primero agregue médicos")
         generate_button = st.button("🚀 Generar", disabled=True, type="primary")
     else:
         st.info(f"📊 {len(st.session_state.workers_data)} trabajadores configurados")
-        generate_button = st.button("🚀 Generar Horario", type="primary")
+        generate_button = st.button("🚀 Generar Calendario", type="primary")
     
     if generate_button:
-        with st.spinner("Generando horario... esto puede tomar varios minutos"):
+        with st.spinner("Generando calendario... esto puede tomar varios minutos"):
             try:
                 success, message = generate_schedule_internal(
                     start_date, 
@@ -487,79 +812,80 @@ with st.sidebar:
     with st.expander("ℹ️ Información del Sistema"):
         st.markdown("""
         **Restricciones implementadas:**
-        - ✅ Turnos obligatorios protegidos
-        - ✅ Incompatibilidades entre trabajadores
+        - ✅ Guardias obligatorias protegidas
+        - ✅ Incompatibilidades entre médicos
         - ✅ Patrón 7/14 días (mismo día de semana)
-        - ✅ Días mínimos entre turnos configurables
+        - ✅ Días mínimos entre guardias configurables
         - ✅ Fines de semana consecutivos máximos
         - ✅ Balance proporcional de fines de semana
         - ✅ Tolerancia de desviación configurable
         - ✅ Días fuera (no disponibles)
-        - ✅ Períodos personalizados por trabajador
-        - ✅ Turnos variables por día/período
+        - ✅ Períodos personalizados por médico
+        - ✅ Guardias variables por día/período
         
         **Parámetros configurables:**
         - 📅 Período de reparto (fecha inicial/final)
         - 🎉 Festivos
-        - 🔢 Turnos por día (por defecto y variables)
-        - ⏳ Gap entre turnos
+        - 🔢 Guardias por día (por defecto y variables)
+        - ⏳ Gap entre guaridas
         - 📆 Fines de semana consecutivos
         - 📊 Tolerancia general y de fines de semana
         """)
 
 # Tabs principales
-tab1, tab2, tab3, tab4 = st.tabs([
-    "👥 Gestión de Trabajadores",
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "👥 Gestión de Médicos",
     "📅 Calendario Generado",
     "📊 Estadísticas",
-    "⚠️ Verificación de Restricciones"
+    "⚠️ Verificación de Restricciones",
+    "🔮 Predictive Analytics"
 ])
 
 # ==================== TAB 1: GESTIÓN DE TRABAJADORES ====================
 with tab1:
-    st.header("👥 Gestión de Trabajadores")
+    st.header("👥 Gestión de Médicos")
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.subheader("Agregar/Editar Trabajador")
+        st.subheader("Agregar/Editar Médico")
         
         with st.form("worker_form"):
-            worker_id = st.text_input("ID del Trabajador *", placeholder="Ej: TRAB001")
+            worker_id = st.text_input("ID del Médico *", placeholder="Ej: TRAB001")
             
             # Información básica
             st.markdown("**📋 Información Básica**")
             col_a, col_b = st.columns(2)
             with col_a:
                 work_percentage = st.slider(
-                    "Porcentaje laboral", 
+                    "Porcentaje de Jornada", 
                     0, 100, 100,
                     help="100% = tiempo completo, 50% = media jornada"
                 )
             with col_b:
                 # Calcular turnos objetivo automáticamente
                 auto_calculate = st.checkbox(
-                    "Calcular turnos automáticamente",
+                    "Calcular guardias automáticamente",
                     value=True,
-                    help="El sistema calculará los turnos según el período y porcentaje"
+                    help="El sistema calculará la asignación según el período y porcentaje"
                 )
             
             if not auto_calculate:
                 target_shifts = st.number_input(
-                    "Turnos objetivo (manual)", 
+                    "Guardias objetivo (manual)", 
                     min_value=0, 
-                    value=10,
-                    help="Especificar manualmente el número de turnos"
+                    value=100,
+                    help="Especificar manualmente el número de guardias"
                 )
             else:
-                st.info("ℹ️ Los turnos se calcularán automáticamente según el período configurado")
+                st.info("ℹ️ Las guardias se calcularán automáticamente según el período configurado")
                 target_shifts = 0  # Se calculará después
             
             # Períodos de trabajo personalizados
             st.markdown("**📅 Períodos de Trabajo Personalizados**")
             use_custom_period = st.checkbox(
                 "Usar período diferente al global",
-                help="Definir fechas específicas para este trabajador"
+                help="Definir fechas específicas para este médico"
             )
             
             if use_custom_period:
@@ -567,12 +893,12 @@ with tab1:
                 with col_start:
                     worker_start_date = st.date_input(
                         "Fecha inicio trabajo",
-                        value=datetime(2024, 12, 1)
+                        value=datetime(2026, 01, 1)
                     )
                 with col_end:
                     worker_end_date = st.date_input(
                         "Fecha fin trabajo",
-                        value=datetime(2024, 12, 31)
+                        value=datetime(2026, 12, 31)
                     )
             else:
                 worker_start_date = None
@@ -584,7 +910,7 @@ with tab1:
             with col_inc1:
                 is_incompatible = st.checkbox(
                     "Incompatible con todos los marcados",
-                    help="Este trabajador no puede coincidir con otros marcados igual"
+                    help="Este médico no puede coincidir con otros marcados igual"
                 )
             with col_inc2:
                 incompatible_with = st.text_input(
@@ -595,10 +921,10 @@ with tab1:
                 )
             
             # Días obligatorios
-            st.markdown("**✅ Días Obligatorios (Mandatory)**")
+            st.markdown("**✅ Guardias Obligatorias (Mandatory)**")
             mandatory_dates = st.text_area(
                 "Fechas obligatorias (una por línea o separadas por coma)",
-                placeholder="2024-12-01\n2024-12-15\n2024-12-25",
+                placeholder="01-12-2024\n15-12-2024\n25-12-2024",
                 height=80,
                 help="Días en los que DEBE trabajar obligatoriamente"
             )
@@ -607,14 +933,14 @@ with tab1:
             st.markdown("**❌ Días Fuera (No disponible)**")
             days_off = st.text_area(
                 "Fechas no disponibles (una por línea o separadas por coma)",
-                placeholder="2024-12-10\n2024-12-20\n2024-12-30",
+                placeholder="10-12-2024\n20-12-2024\n30-12-2024",
                 height=80,
-                help="Días en los que NO puede tener asignación de turnos (vacaciones, permisos, etc.)"
+                help="Días en los que NO puede tener asignación de guardias (vacaciones, permisos, etc.)"
             )
             
             col_submit, col_clear = st.columns(2)
             with col_submit:
-                submit = st.form_submit_button("➕ Agregar Trabajador", type="primary")
+                submit = st.form_submit_button("➕ Agregar Médico", type="primary")
             with col_clear:
                 clear = st.form_submit_button("🗑️ Limpiar")
             
@@ -633,8 +959,8 @@ with tab1:
                         date_str = date_str.strip()
                         if date_str:
                             try:
-                                date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-                                mandatory_list.append(date_obj.strftime('%Y-%m-%d'))
+                                date_obj = datetime.strptime(date_str, '%d-%m-%Y')
+                                mandatory_list.append(date_obj.strftime('%d-%m-%Y'))
                             except:
                                 st.warning(f"⚠️ Fecha obligatoria inválida: {date_str}")
                 
@@ -646,8 +972,8 @@ with tab1:
                         date_str = date_str.strip()
                         if date_str:
                             try:
-                                date_obj = datetime.strptime(date_str, '%Y-%m-%d')
-                                days_off_list.append(date_obj.strftime('%Y-%m-%d'))
+                                date_obj = datetime.strptime(date_str, '%d-%m-%Y')
+                                days_off_list.append(date_obj.strftime('%d-%m-%Y'))
                             except:
                                 st.warning(f"⚠️ Fecha fuera inválida: {date_str}")
                 
@@ -665,8 +991,8 @@ with tab1:
                 
                 # Agregar período personalizado si se especificó
                 if use_custom_period and worker_start_date and worker_end_date:
-                    worker_data['custom_start_date'] = worker_start_date.strftime('%Y-%m-%d')
-                    worker_data['custom_end_date'] = worker_end_date.strftime('%Y-%m-%d')
+                    worker_data['custom_start_date'] = worker_start_date.strftime('%d-%m-%Y')
+                    worker_data['custom_end_date'] = worker_end_date.strftime('%d-%m-%Y')
                 
                 # Verificar si ya existe
                 existing_idx = None
@@ -677,10 +1003,10 @@ with tab1:
                 
                 if existing_idx is not None:
                     st.session_state.workers_data[existing_idx] = worker_data
-                    st.success(f"✅ Trabajador {worker_id} actualizado")
+                    st.success(f"✅ Médico {worker_id} actualizado")
                 else:
                     st.session_state.workers_data.append(worker_data)
-                    st.success(f"✅ Trabajador {worker_id} agregado")
+                    st.success(f"✅ Médico {worker_id} agregado")
                 
                 st.rerun()
     
@@ -731,13 +1057,13 @@ with tab1:
                 
                 with col_info:
                     # Información básica
-                    st.write(f"**Porcentaje laboral:** {worker.get('work_percentage', 1)*100:.0f}%")
+                    st.write(f"**Porcentaje jornada:** {worker.get('work_percentage', 1)*100:.0f}%")
                     
                     # Mostrar objetivo de turnos claramente
                     if worker.get('auto_calculate_shifts', True):
-                        st.write(f"**🔄 Turnos objetivo:** Se calculará automáticamente según el período")
+                        st.write(f"**🔄 Guardias objetivo:** Se calculará automáticamente según el período")
                     else:
-                        st.write(f"**🎯 Turnos objetivo:** {worker.get('target_shifts', 0)} (configurado manualmente)")
+                        st.write(f"**🎯 Guardias objetivo:** {worker.get('target_shifts', 0)} (configurado manualmente)")
                     
                     # Período personalizado
                     if worker.get('custom_start_date') or worker.get('custom_end_date'):
@@ -760,7 +1086,7 @@ with tab1:
                         else:
                             st.write(f"   {', '.join(worker['mandatory_dates'][:5])} ... y {mandatory_count-5} más")
                     
-                    # Días fuera (nueva funcionalidad)
+                    # Días fuera 
                     if worker.get('days_off'):
                         days_off_count = len(worker['days_off'])
                         st.write(f"**❌ Días fuera:** {days_off_count} día(s)")
@@ -799,7 +1125,7 @@ with tab2:
             with col1:
                 st.metric("Días programados", len(df))
             with col2:
-                st.metric("Turnos cubiertos", f"{total_slots}/{total_possible}")
+                st.metric("Guardias cubiertos", f"{total_slots}/{total_possible}")
             with col3:
                 st.metric("Cobertura", f"{coverage:.1f}%")
             with col4:
@@ -808,6 +1134,72 @@ with tab2:
                 st.metric("PDFs generados", len(pdf_files))
             
             st.markdown("---")
+            
+            # Real-Time Editing Controls
+            if st.session_state.real_time_enabled:
+                st.subheader("⚡ Real-Time Editing")
+                
+                col_undo, col_redo, col_info = st.columns([1, 1, 2])
+                
+                with col_undo:
+                    if st.button("↶ Undo", disabled=len(st.session_state.undo_stack) == 0):
+                        success, message = undo_last_change()
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                
+                with col_redo:
+                    if st.button("↷ Redo", disabled=len(st.session_state.redo_stack) == 0):
+                        success, message = redo_last_change()
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                
+                with col_info:
+                    st.caption(f"📝 Changes: {len(st.session_state.undo_stack)} | Can undo: {len(st.session_state.undo_stack) > 0}")
+                
+                # Interactive assignment
+                with st.expander("✏️ Manual Assignment"):
+                    st.markdown("**Assign worker to a specific shift**")
+                    
+                    col_date, col_post, col_worker = st.columns(3)
+                    
+                    with col_date:
+                        available_dates = sorted(st.session_state.schedule.keys())
+                        selected_date = st.selectbox(
+                            "Select date",
+                            options=available_dates,
+                            format_func=lambda d: d.strftime('%d-%m-%Y (%a)')
+                        )
+                    
+                    with col_post:
+                        num_posts = len(st.session_state.schedule[selected_date])
+                        selected_post = st.selectbox(
+                            "Select post",
+                            options=list(range(num_posts)),
+                            format_func=lambda p: f"Puesto {p+1}"
+                        )
+                    
+                    with col_worker:
+                        worker_ids = [w['id'] for w in st.session_state.workers_data]
+                        selected_worker = st.selectbox(
+                            "Select worker",
+                            options=worker_ids
+                        )
+                    
+                    if st.button("✅ Assign Worker", type="primary"):
+                        success, message = assign_worker_real_time(selected_worker, selected_date, selected_post)
+                        if success:
+                            st.success(message)
+                            st.rerun()
+                        else:
+                            st.error(message)
+                
+                st.markdown("---")
             
             # Tabla del calendario
             st.subheader("📋 Calendario Detallado")
@@ -1015,6 +1407,132 @@ with tab4:
             
             if mandatory_count > 0:
                 st.warning("⚠️ Algunos turnos obligatorios fueron modificados durante la optimización")
+
+# ==================== TAB 5: PREDICTIVE ANALYTICS ====================
+with tab5:
+    st.header("🔮 Predictive Analytics")
+    
+    if not st.session_state.predictive_enabled:
+        st.info("ℹ️ Predictive analytics is disabled. Enable it in the sidebar to access AI-powered forecasting and recommendations.")
+    elif st.session_state.scheduler is None:
+        st.info("ℹ️ No hay horario generado. Generate a schedule first to access predictive analytics.")
+    else:
+        # Insights Summary
+        st.subheader("💡 Key Insights")
+        insights = get_predictive_insights()
+        
+        if insights:
+            for insight in insights:
+                if insight['type'] == 'success':
+                    st.success(f"**{insight['title']}**: {insight['message']}")
+                elif insight['type'] == 'warning':
+                    st.warning(f"**{insight['title']}**: {insight['message']}")
+                elif insight['type'] == 'info':
+                    st.info(f"**{insight['title']}**: {insight['message']}")
+        else:
+            st.info("No insights available yet. Generate more schedules to build historical data.")
+        
+        st.markdown("---")
+        
+        # Demand Forecasting
+        st.subheader("📈 Demand Forecasting")
+        
+        col_forecast_btn, col_forecast_info = st.columns([1, 2])
+        
+        with col_forecast_btn:
+            if st.button("🔮 Generate Forecasts", type="primary"):
+                with st.spinner("Generating demand forecasts..."):
+                    success, message, forecasts = generate_demand_forecasts()
+                    if success:
+                        st.success(message)
+                    else:
+                        st.error(message)
+        
+        with col_forecast_info:
+            if st.session_state.demand_forecasts:
+                method = st.session_state.demand_forecasts.get('method', 'unknown')
+                st.caption(f"📊 Forecast method: {method}")
+        
+        # Display forecasts
+        if st.session_state.demand_forecasts:
+            forecasts = st.session_state.demand_forecasts
+            
+            if 'daily_demand' in forecasts:
+                st.markdown("**Predicted Daily Demand (Next 30 Days)**")
+                
+                # Create forecast chart
+                forecast_data = pd.DataFrame({
+                    'Day': list(range(1, len(forecasts['daily_demand']) + 1)),
+                    'Predicted Demand': forecasts['daily_demand']
+                })
+                
+                fig = px.line(
+                    forecast_data,
+                    x='Day',
+                    y='Predicted Demand',
+                    title='Demand Forecast',
+                    markers=True
+                )
+                fig.update_layout(height=400)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Statistics
+                col_avg, col_max, col_min = st.columns(3)
+                with col_avg:
+                    st.metric("Average Demand", f"{sum(forecasts['daily_demand'])/len(forecasts['daily_demand']):.1f}")
+                with col_max:
+                    st.metric("Peak Demand", f"{max(forecasts['daily_demand']):.1f}")
+                with col_min:
+                    st.metric("Minimum Demand", f"{min(forecasts['daily_demand']):.1f}")
+        
+        st.markdown("---")
+        
+        # Optimization Recommendations
+        st.subheader("🎯 Optimization Recommendations")
+        
+        if st.button("🔄 Refresh Recommendations"):
+            with st.spinner("Analyzing schedule..."):
+                get_optimization_recommendations()
+                st.rerun()
+        
+        recommendations = st.session_state.optimization_recommendations
+        
+        if recommendations:
+            st.info(f"Found {len(recommendations)} recommendations")
+            
+            # Group by priority
+            high_priority = [r for r in recommendations if r.get('priority') == 'high']
+            medium_priority = [r for r in recommendations if r.get('priority') == 'medium']
+            low_priority = [r for r in recommendations if r.get('priority') == 'low']
+            
+            if high_priority:
+                st.markdown("**🔴 High Priority**")
+                for rec in high_priority:
+                    st.error(f"• {rec['message']}")
+            
+            if medium_priority:
+                st.markdown("**🟡 Medium Priority**")
+                for rec in medium_priority:
+                    st.warning(f"• {rec['message']}")
+            
+            if low_priority:
+                st.markdown("**🟢 Low Priority**")
+                for rec in low_priority:
+                    st.info(f"• {rec['message']}")
+        else:
+            st.success("✅ No optimization recommendations. Schedule looks good!")
+        
+        st.markdown("---")
+        
+        # Historical Analysis
+        st.subheader("📊 Historical Analysis")
+        
+        with st.expander("View Historical Trends"):
+            st.markdown("**Schedule Performance Over Time**")
+            st.caption("Historical data will be available after generating multiple schedules.")
+            
+            # Placeholder for historical charts
+            st.info("ℹ️ Historical analysis requires multiple schedule generations to build trend data.")
 
 # Footer
 st.markdown("---")
