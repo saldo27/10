@@ -893,7 +893,7 @@ with tab1:
                 with col_start:
                     worker_start_date = st.date_input(
                         "Fecha inicio trabajo",
-                        value=datetime(2026, 01, 1)
+                        value=datetime(2026, 1, 1)
                     )
                 with col_end:
                     worker_end_date = st.date_input(
@@ -924,7 +924,7 @@ with tab1:
             st.markdown("**✅ Guardias Obligatorias (Mandatory)**")
             mandatory_dates = st.text_area(
                 "Fechas obligatorias (una por línea o separadas por coma)",
-                placeholder="01-12-2024\n15-12-2024\n25-12-2024",
+                placeholder="01-12-2026\n15-12-2026\n25-12-2026",
                 height=80,
                 help="Días en los que DEBE trabajar obligatoriamente"
             )
@@ -933,7 +933,7 @@ with tab1:
             st.markdown("**❌ Días Fuera (No disponible)**")
             days_off = st.text_area(
                 "Fechas no disponibles (una por línea o separadas por coma)",
-                placeholder="10-12-2024\n20-12-2024\n30-12-2024",
+                placeholder="10-12-2026\n20-12-2026\n30-12-2026",
                 height=80,
                 help="Días en los que NO puede tener asignación de guardias (vacaciones, permisos, etc.)"
             )
